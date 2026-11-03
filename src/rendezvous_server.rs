@@ -662,7 +662,7 @@ impl RendezvousServer {
                     allow_err!(self.handle_local_addr(la, addr, None).await);
                 }
                 Some(rendezvous_message::Union::IceCandidate(ice)) => {
-                    self.handle_ice_candidate(ice, addr).await;
+                    self.handle_ice_candidate(ice, addr, peer_ip).await;
                     // Candidates trickle in on the same connection.
                     return true;
                 }
@@ -1100,7 +1100,7 @@ impl RendezvousServer {
             if !routes.contains(v4, Instant::now()) {
                 return RouteReply::NoRoute;
             }
-            if !routes.allow_to_controller(v4, Instant::now()) {
+            if !routes.allow_reply(v4, Instant::now()) { // HTE: candidates cannot use up the replies' budget
                 return RouteReply::Drop;
             }
         }
@@ -1131,7 +1131,7 @@ impl RendezvousServer {
     /// Pass an ICE candidate on: from a controller to the device it is
     /// offering to (`id` set), or from that device back to the controller
     /// (`socket_addr` set). Anything else is dropped.
-    async fn handle_ice_candidate(&mut self, ice: IceCandidate, addr: SocketAddr) {
+    async fn handle_ice_candidate(&mut self, ice: IceCandidate, addr: SocketAddr, peer_ip: IpAddr) {
         if !crate::hte_webrtc::enabled() { return; } // HTE
         if ice.candidate.is_empty()
             || ice.candidate.len() > webrtc_signal::MAX_CANDIDATE_LEN
@@ -1161,6 +1161,11 @@ impl RendezvousServer {
             }
         } else if !ice.socket_addr.is_empty() {
             let addr_a = try_into_v4(AddrMangle::decode(&ice.socket_addr));
+            // HTE: only the device the route was opened for may send to its controller
+            let Some(device) = self.webrtc.lock().await.peer_of(addr_a, now) else { return };
+            if !crate::hte_scope::target_answers(&self.pm, &device, peer_ip).await {
+                return;
+            }
             let allowed = self.webrtc.lock().await.allow_to_controller(addr_a, now);
             if !allowed {
                 return;

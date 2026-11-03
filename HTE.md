@@ -38,6 +38,9 @@ release tag plus the commits described here; changes to upstream files are small
   `policy::check_target` judge before any route opens; a route is opened only for an admitted request, only by the connection that made it,
   and reaches only the device offered to. `tests/hte_webrtc_scope.rs` (new) checks this end to end, with the switch off, and the
   proxy-forwarded WebSocket keying. `tests/webrtc_signalling.rs` (upstream's, Linux only) sets the switch on.
+- Two hardenings in the signalling (marked `// HTE`): a candidate addressed to a controller is passed on only when it comes from the address the
+  route's device registered from (as the relay gate does for a relay response), and replies other than candidates have their own budget per
+  route, so candidates cannot use up the room an answer needs.
 - Image labels: `com.hte.remote.hbbs-version` 1.2.0-hte.1, `...upstream.cortendesk-server` 1.2.0.
 
 ## hte-console 0.0.1 to 0.8.3 (2026-10-24 to 2026-10-25): the console in Rust, beside the previous console

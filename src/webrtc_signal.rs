@@ -39,6 +39,8 @@ pub const MAX_ROUTES_PER_IP: usize = 64;
 /// per interface address plus a few reflexive and relay ones; clients cap
 /// their own queues at 64.
 pub const MAX_CANDIDATES: u32 = 64;
+/// HTE: replies other than candidates per route.
+pub const MAX_REPLIES: u32 = 16;
 /// An offer or answer: a base64 envelope around an SDP of about a kilobyte.
 /// Kept well under a UDP datagram, which carries the offer to the device.
 pub const MAX_SDP_LEN: usize = 16 * 1024;
@@ -52,6 +54,7 @@ pub struct Route<S> {
     expires: Instant,
     to_peer: u32,
     to_controller: u32,
+    replies: u32, // HTE: answers and responses, apart from candidates
     /// The controller's connection, once something has been sent to it.
     pub sink: Option<S>,
 }
@@ -94,6 +97,7 @@ impl<S> Routes<S> {
                 expires: now + ROUTE_TTL,
                 to_peer: 0,
                 to_controller: 0,
+                replies: 0,
                 sink: None,
             },
         );
@@ -128,6 +132,23 @@ impl<S> Routes<S> {
         match self.get(addr, now) {
             Some(r) if r.to_controller < MAX_CANDIDATES => {
                 r.to_controller += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// HTE: the device this route was opened for.
+    pub fn peer_of(&mut self, addr: SocketAddr, now: Instant) -> Option<String> {
+        self.get(addr, now).map(|r| r.peer_id.clone())
+    }
+
+    /// HTE: may a reply other than a candidate (answer, punch or relay response)
+    /// be written to the controller? Own small budget, so candidates cannot use it up.
+    pub fn allow_reply(&mut self, addr: SocketAddr, now: Instant) -> bool {
+        match self.get(addr, now) {
+            Some(r) if r.replies < MAX_REPLIES => {
+                r.replies += 1;
                 true
             }
             _ => false,
@@ -198,6 +219,23 @@ mod tests {
         r.open(addr(1), "2", now);
         assert!(!r.allow_to_peer(addr(1), "1", now));
         assert!(r.allow_to_peer(addr(1), "2", now));
+    }
+
+    #[test]
+    fn replies_have_their_own_budget_and_the_route_knows_its_device() {
+        let now = Instant::now();
+        let mut r = Routes::<()>::default();
+        r.open(addr(1), "42", now);
+        assert_eq!(r.peer_of(addr(1), now).as_deref(), Some("42"));
+        assert_eq!(r.peer_of(addr(2), now), None);
+        for _ in 0..MAX_CANDIDATES {
+            assert!(r.allow_to_controller(addr(1), now));
+        }
+        assert!(r.allow_reply(addr(1), now), "candidates do not use up the replies");
+        for _ in 1..MAX_REPLIES {
+            assert!(r.allow_reply(addr(1), now));
+        }
+        assert!(!r.allow_reply(addr(1), now));
     }
 
     #[test]
