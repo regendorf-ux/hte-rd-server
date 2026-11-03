@@ -66,7 +66,7 @@ fn parse(entry: &str) -> Option<String> {
         let bytes = u.as_bytes();
         let hex_at = |i: usize| bytes.get(i).map_or(false, u8::is_ascii_hexdigit);
         let bad_escape = bytes.iter().enumerate().any(|(i, b)| *b == b'%' && !(hex_at(i + 1) && hex_at(i + 2)));
-        if !userinfo_re().is_match(u) || bad_escape {
+        if !userinfo_re().is_match(u) || bad_escape || !decodes_to_utf8(u) {
             return None;
         }
         userinfo = Some(u.to_string());
@@ -83,6 +83,26 @@ fn parse(entry: &str) -> Option<String> {
         return None;
     }
     Some(format!("{scheme}:{}{}{rest}", if slashes { "//" } else { "" }, userinfo.map(|u| format!("{u}@")).unwrap_or_default()))
+}
+
+/// The browser client percent-decodes the user name and password and drops the entry when that fails: so must we.
+fn decodes_to_utf8(u: &str) -> bool {
+    let b = u.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() + 1 {
+            match u.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                Some(v) => out.push(v),
+                None => return false,
+            }
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).is_ok()
 }
 
 fn valid_host_port(hp: &str) -> bool {
@@ -134,6 +154,7 @@ mod tests {
         assert_eq!(normalize("STUN:stun.example.test:3478, turn://user:p%40ss@turn.example.test:3478").as_deref(), Some("stun:stun.example.test:3478,turn://user:p%40ss@turn.example.test:3478"));
         assert_eq!(normalize("stuns://10.0.0.1").as_deref(), Some("stuns://10.0.0.1"));
         assert_eq!(normalize("turns://a:b@[2001:db8::1]:5349").as_deref(), Some("turns://a:b@[2001:db8::1]:5349"));
+        assert_eq!(normalize("turn://u:p%C3%A9@h.example.test").as_deref(), Some("turn://u:p%C3%A9@h.example.test"));
         assert_eq!(normalize("stun:[::1]").as_deref(), Some("stun:[::1]"));
     }
 
@@ -156,6 +177,8 @@ mod tests {
             "stun:bad_host.example.test",
             "turn://u:p%zz@h.example.test",        // broken escape
             "turn://u:p%4@h.example.test",
+            "turn://u:p%ff@h.example.test",        // not UTF-8 once decoded: the browser drops it
+            "turn://u:p%C3@h.example.test",
             "http://example.test",
             "stun.example.test:3478",              // no scheme
         ] {
