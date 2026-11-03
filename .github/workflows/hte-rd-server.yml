@@ -114,6 +114,7 @@ jobs:
             com.hte.remote.upstream.rustdesk-server=1.1.17
             com.hte.remote.upstream.cortendesk-server=1.1.1
             com.hte.remote.upstream.cortendesk=1.15.0
+            com.hte.remote.upstream.cortendesk-webclient=1.18.0
             org.opencontainers.image.title=HTE Remote server
             org.opencontainers.image.description=HTE Remote's ID server, relay and console (hbbs, hbbr, hte-console) in one image, with per-person reach enforcement. Based on CortenDesk and RustDesk Server. AGPL-3.0.
             org.opencontainers.image.licenses=AGPL-3.0-only

@@ -8,11 +8,17 @@ use crate::laravel::{self, Cast};
 use crate::php::{self, Arr, Fault, Key, Val};
 use rusqlite::Connection;
 
+fn lossy(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
 enum Kind {
     Bool,
     Enum(&'static [&'static str]),
     Int(i64, i64),
     Text,
+    /// RustDesk 1.5's STUN/TURN list (`crate::ice`), stored in canonical form
+    Ice,
 }
 
 /// `Strategy::OPTION_KEYS`: the allow-list of pushable keys (a security control: anything else is dropped).
@@ -34,6 +40,8 @@ fn spec(key: &[u8]) -> Option<Kind> {
         b"allow-scope-violation-alarm" | b"allow-scope-violation-close" => Bool,
         b"enable-abr" | b"allow-remove-wallpaper" | b"allow-auto-record-incoming" | b"keep-awake-during-incoming-sessions"
         | b"enable-lan-discovery" | b"allow-auto-update" => Bool,
+        // not an incoming-session control: a bad value costs WebRTC only (the client falls back to its other transports)
+        b"ice-servers" => Ice,
         _ => return None,
     })
 }
@@ -62,8 +70,15 @@ pub fn sanitize_options(options: &Arr) -> Map {
             Val::Str(s) => s.clone(),
             Val::Arr(_) => continue,
         };
-        let value = php::trim(&value).to_vec();
+        let mut value = php::trim(&value).to_vec();
         let ok = match kind {
+            Kind::Ice => match crate::ice::normalize(&lossy(&value)) {
+                Some(n) => {
+                    value = n.into_bytes();
+                    true
+                }
+                None => false,
+            },
             Kind::Bool => value.is_empty() || value == b"Y" || value == b"N",
             Kind::Enum(vals) => vals.iter().any(|x| x.as_bytes() == value.as_slice()),
             Kind::Int(min, max) => {

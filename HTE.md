@@ -25,6 +25,14 @@ release tag plus the commits described here; changes to upstream files are small
 
 ## hte-console 0.0.1 to 0.8.3 (2026-10-24 to 2026-10-25): the console in Rust, beside the previous console
 
+## HTE Remote 2.2.0 (2026-11-02), the web client of CortenDesk 1.18
+
+`hte-console/rdclient/` is now the web client build of CortenDesk 1.18.0 (AGPL-3.0, [marcpope/cortendesk](https://github.com/marcpope/cortendesk)), with the
+same serve-time branding. New in the console: a Terminal action in the device list, `ice-servers` in strategies, and the web client's WebRTC
+settings (off by default). The details are in `hte-console/CHANGES.md` (2.2.0). The image gets a new label, `com.hte.remote.upstream.cortendesk-webclient` 1.18.0; `...cortendesk` stays 1.15.0 (the console's pages and endpoints are CortenDesk 1.15's).
+
+## HTE Remote 2.0.0 (2026-10-25), phase 9: one image, no PHP, its own name
+
 `hte-console/` is new code, not a change to upstream files. It began as a shadow proxy in front of CortenDesk's console that recorded
 sanitised fixtures (`hte-console/SANITISER.md`), then answered one group of routes after another on CortenDesk's console's SQLite file,
 with no schema change: the device endpoints (0.1), the client's sign-in (0.2), the link with `hbbs` and the scheduled sweeps (0.3),

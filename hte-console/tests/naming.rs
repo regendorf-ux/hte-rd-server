@@ -21,11 +21,12 @@ fn root() -> PathBuf {
 }
 
 /// Lines that may say CortenDesk: the one credit, licence-required notices, and the web client's own replacements of the name.
-const ALLOWED: [&str; 8] = [
+const ALLOWED: [&str; 9] = [
     "github.com/marcpope/cortendesk", // Settings > About: the credit
     "Corten<span>Desk</span>",        // webclient.rs: what the bundled web client says, replaced at serve time
     "alt=\"CortenDesk\"",
     "\\u2014 CortenDesk`",
+    "\\xB7 CortenDesk`",
     "slug(\"CortenDesk\")",           // cache.rs: Laravel's slug of the old default APP_NAME, a test
     "(from CortenDesk)",              // asset header comments: where the file came from
     "Modified for CortenDesk",        // remixicon.css: the licence's modification notice

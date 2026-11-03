@@ -49,11 +49,11 @@ const STRINGS: &[&str] = &[
     "id_server", "relay_server", "public_key", "rdgen_url", "client_url_scheme", "server_access_mode", "oidc_discovery_url", "oidc_public_base_url", "oidc_client_id", "oidc_scopes",
     "oidc_button_label", "oidc_new_user_policy", "oidc_allowed_domains", "smtp_host", "smtp_encryption", "smtp_username", "smtp_from_address", "smtp_from_name", "apprise_mode",
     "online_window", "log_retention_days", "default_device_group_id", "oidc_default_group_id", "smtp_port", "email_trusted_device_days", "apprise_cooldown_minutes",
-    "apprise_offline_grace_minutes", "hte_password_days",
+    "apprise_offline_grace_minutes", "hte_password_days", "web_client_ice_servers",
 ];
 const BOOLS: &[&str] = &[
     "downloads_on_login", "require_device_approval", "auto_approve_signed_in", "server_ip_match", "hte_scope_enforce", "hte_passwords", "two_factor_required", "two_factor_required_admins",
-    "email_login_verification", "oidc_enabled", "oidc_default_admin", "oidc_require_verified_email", "oidc_logout_enabled", "oidc_disable_local_login", "smtp_enabled", "apprise_enabled",
+    "web_client_webrtc", "email_login_verification", "oidc_enabled", "oidc_default_admin", "oidc_require_verified_email", "oidc_logout_enabled", "oidc_disable_local_login", "smtp_enabled", "apprise_enabled",
 ];
 /// Write-only inputs: read from a post, never from the database, never given back.
 const SECRETS: &[&str] = &["oidc_client_secret", "smtp_password", "apprise_endpoint", "apprise_config_key", "apprise_urls"];
@@ -75,6 +75,12 @@ fn on(c: &Connection, key: &str) -> Result<bool, Fault> {
 /// `Setting::put($key, $value)`: an unchanged value writes nothing.
 fn put(ctx: &Ctx, c: &Connection, key: &str, value: &str) -> Result<(), Fault> {
     crate::backup::put_setting(c, key, value, ctx.now).map_err(Fault::Other)
+}
+
+/// `webclient_webrtc`: unlike CortenDesk (on unless turned off) HTE Remote has it OFF until someone turns it on, because a direct
+/// WebRTC session does not pass the relay (see `pages::webclient`).
+pub(crate) fn webrtc_on(c: &Connection) -> Result<bool, Fault> {
+    on(c, "webclient_webrtc")
 }
 
 fn bool_s(b: bool) -> &'static str {
@@ -114,6 +120,9 @@ fn load(ctx: &Ctx, c: &Connection) -> Result<(Values, Vec<(String, String)>), Fa
     s(&mut v, "online_window", (if int_of(&window) == 0 { 60 } else { int_of(&window) }).to_string());
     s(&mut v, "rdgen_url", txt(c, "rdgen_url", &ctx.p.config.rdgen_default)?);
     s(&mut v, "client_url_scheme", scheme(c)?);
+    // HTE: off until chosen (a direct session does not pass the relay)
+    b(&mut v, "web_client_webrtc", webrtc_on(c)?);
+    s(&mut v, "web_client_ice_servers", txt(c, "webclient_ice_servers", "")?);
     b(&mut v, "downloads_on_login", txt(c, "downloads_on_login", if truthy_env("HTE_REMOTE_DOWNLOADS_ON_LOGIN", true) { "1" } else { "0" })? == "1");
     s(&mut v, "log_retention_days", int_of(&txt(c, "log_retention_days", &env_or("HTE_REMOTE_LOG_RETENTION_DAYS", "365"))?).to_string());
     b(&mut v, "require_device_approval", on(c, "require_device_approval")?);
@@ -287,7 +296,7 @@ fn tab_for(field: &str) -> Option<&'static str> {
         "logRetentionDays" => "maintenance",
         "twoFactorRequired" | "twoFactorRequiredAdmins" | "emailLoginVerification" | "emailTrustedDeviceDays" => "security",
         "idServer" | "relayServer" | "publicKey" | "onlineWindow" | "rdgenUrl" | "clientUrlScheme" | "downloadsOnLogin" | "relayServers" | "requireDeviceApproval" | "autoApproveSignedIn"
-        | "defaultDeviceGroupId" | "serverAccessMode" | "serverIpMatch" => "server",
+        | "defaultDeviceGroupId" | "serverAccessMode" | "serverIpMatch" | "webClientWebrtc" | "webClientIceServers" => "server",
         _ => return None,
     })
 }
@@ -731,6 +740,13 @@ pub fn save(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
     if !scheme_in.trim().is_empty() && normalize_scheme(&scheme_in).is_empty() {
         return failed(ctx, c, v, relays, custom("clientUrlScheme", "Letters, digits, \"+\", \"-\" and \".\" only, starting with a letter.", "server"), "server", "");
     }
+    if crate::ice::normalize(&vs(&v, "web_client_ice_servers")).is_none() {
+        let msg = match crate::ice::first_invalid(&vs(&v, "web_client_ice_servers")) {
+            Some(bad) => format!("{bad} is not a STUN or TURN server the client will use. A TURN entry needs a user name and password: turn://user:password@host:3478."),
+            None => format!("At most {} servers.", crate::ice::MAX_ENTRIES),
+        };
+        return failed(ctx, c, v, relays, custom("webClientIceServers", &msg, "server"), "server", "");
+    }
     let group = int_of(&vs(&v, "default_device_group_id"));
     if group > 0 && find(c, "device_groups", group)?.is_none() {
         return failed(ctx, c, v, relays, custom("defaultDeviceGroupId", "That device group no longer exists.", "server"), "server", "");
@@ -763,6 +779,16 @@ pub fn save(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         let scheme_v = normalize_scheme(&scheme_in);
         now_s("client_url_scheme", if scheme_v.is_empty() { "rustdesk" } else { &scheme_v })?;
         now_s("downloads_on_login", bool_s(vb(&v, "downloads_on_login")))?;
+        if vb(&v, "web_client_webrtc") != webrtc_on(c)? {
+            now_s("webclient_webrtc", bool_s(vb(&v, "web_client_webrtc")))?;
+            audit(ctx, c, "settings.webclient-webrtc", &format!("The web client {} WebRTC", if vb(&v, "web_client_webrtc") { "may use" } else { "no longer uses" }), Some("settings"), None)?;
+        }
+        let ice = crate::ice::normalize(&vs(&v, "web_client_ice_servers")).unwrap_or_default();
+        if ice != txt(c, "webclient_ice_servers", "")? {
+            // the list can hold a TURN password: the log says that it changed, never what it says
+            audit(ctx, c, "settings.webclient-ice", if ice.is_empty() { "The web client's ICE servers were cleared" } else { "The web client's ICE servers were changed" }, Some("settings"), None)?;
+        }
+        now_s("webclient_ice_servers", &ice)?;
         now_s("log_retention_days", &int_of(&vs(&v, "log_retention_days")).to_string())?;
         now_s("require_device_approval", bool_s(vb(&v, "require_device_approval")))?;
         now_s("auto_approve_signed_in", bool_s(vb(&v, "auto_approve_signed_in")))?;

@@ -70,6 +70,19 @@
                     </div>
                     <div class="mb-3">
                         <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="webClientWebRtc" name="web_client_webrtc" value="1"{{ ' checked' if v.web_client_webrtc else '' }}>
+                            <label class="form-check-label" for="webClientWebRtc">Web client uses WebRTC</label>
+                        </div>
+                        <div class="form-text">Lets the web client connect straight to devices running RustDesk 1.5 or later, with the relay as fallback. The browser and the device learn each other's IP addresses. <strong>A direct session does not pass the relay</strong>, so the relay's own check never sees it. Per-person reach still decides who may start one (the ID server judges the offer, and a computer's password is handed to the page only for a computer in reach). Needs the ID server's own WebRTC switch (<code>HTE_REMOTE_WEBRTC=1</code>) as well. Off by default.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="webClientIceServers">Web client ICE servers</label>
+                        <input type="text" id="webClientIceServers" class="form-control rd-mono{{ ' is-invalid' if e.web_client_ice_servers else '' }}" name="web_client_ice_servers" value="{{ v.web_client_ice_servers }}" placeholder="stun:stun.example.com:3478, turn://user:password@turn.example.com:3478" autocomplete="off">
+                        {% if e.web_client_ice_servers %}<div class="invalid-feedback">{{ e.web_client_ice_servers }}</div>{% endif %}
+                        <div class="form-text">STUN and TURN servers for the web client's WebRTC connections, comma-separated, in the same format as the strategy option. Used only while WebRTC is on. Leave empty to use public STUN servers (Cloudflare and Google). Every signed-in person who opens the web client receives the TURN password.</div>
+                    </div>
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" role="switch" id="downloadsOnLogin" name="downloads_on_login" value="1"{{ ' checked' if v.downloads_on_login else '' }}>
                             <label class="form-check-label" for="downloadsOnLogin">Link to client downloads on the sign-in page</label>
                         </div>

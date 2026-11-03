@@ -244,6 +244,7 @@ async fn the_device_list_and_its_filters() {
     let r = h.get("/devices", &cookie).await;
     assert_eq!(r.status, 200, "{}", r.body);
     let body = squash(&r.body);
+    let r_body = r.body.clone();
     assert!(body.contains("<title>Devices | HTE Remote</title>"));
     // chips: 3 live devices (1,2,4 is pending so not counted; 3 is trashed): total 2, online 1
     assert!(body.contains(r#"<span class="rd-chip-value">2</span> <span class="rd-chip-label">Devices</span>"#), "{body}");
@@ -253,6 +254,20 @@ async fn the_device_list_and_its_filters() {
     assert!(body.contains("FRONT-PC") && body.contains("BACK-PC") && !body.contains("OLD-PC"));
     // default order: last seen, newest first
     assert!(body.find("FRONT-PC").unwrap() < body.find("BACK-PC").unwrap());
+    // the Terminal action sits beside Connect (twice: the table and the compact list) for a desktop computer, with the same
+    // address as Connect plus the terminal mode, and never for a phone
+    let terminal = |b: &str, id: &str| b.matches(&format!(r#"href="/webclient?id={id}&amp;mode=terminal""#)).count();
+    let connect = |b: &str, id: &str| b.matches(&format!(r#"href="/webclient?id={id}""#)).count();
+    for id in ["1001", "1002"] {
+        assert_eq!((connect(&r_body, id), terminal(&r_body, id)), (2, 2), "{id}");
+    }
+    h.sql("update devices set os = 'android / Android 14' where rustdesk_id = '1002'");
+    let r = h.get("/devices", &cookie).await;
+    assert_eq!((connect(&r.body, "1002"), terminal(&r.body, "1002")), (2, 0), "no terminal on Android");
+    assert_eq!(terminal(&r.body, "1001"), 2);
+    h.sql("update devices set os = 'ios / iOS 17' where rustdesk_id = '1002'");
+    assert_eq!(terminal(&h.get("/devices", &cookie).await.body, "1002"), 0);
+    h.sql("update devices set os = 'macos / macOS 14' where rustdesk_id = '1002'");
     // search, status, group, owner
     let r = h.get("/devices?search=erin", &cookie).await;
     assert!(r.body.contains("BACK-PC") && !r.body.contains("FRONT-PC"));
@@ -558,6 +573,14 @@ async fn the_strategies_page() {
     let r = h.post_form("/strategies/preview", &cookie, &[tok(), ("id", "0"), ("name", ""), ("timeout", "15"), ("opt_auto-disconnect-timeout", "")]).await;
     assert_eq!(r.status, 422, "{}", r.body);
     assert!(r.body.contains("The name field is required."));
+    // the Network group and its ice-servers option: a list the client would skip is refused, a good one is kept canonical
+    let r = h.get("/strategies?create=1", &cookie).await;
+    assert!(squash(&r.body).contains("Network") && r.body.contains("opt_ice-servers"));
+    let r = h.post_form("/strategies/preview", &cookie, &[tok(), ("id", "0"), ("name", "Net"), ("timeout", "15"), ("opt_ice-servers", "turn://turn.example.test:3478")]).await;
+    assert_eq!(r.status, 422, "{}", r.body);
+    assert!(squash(&r.body).contains("turn://turn.example.test:3478 is not a STUN or TURN server the client will use"));
+    let r = h.post_form("/strategies/preview", &cookie, &[tok(), ("id", "0"), ("name", "Net"), ("timeout", "15"), ("opt_ice-servers", " STUN:stun.example.test ")]).await;
+    assert_eq!(r.status, 200, "{}", r.body);
     let r = h.post_form("/strategies/preview", &cookie, &[tok(), ("id", "0"), ("name", "Lock"), ("timeout", "15"), ("opt_auto-disconnect-timeout", "5000")]).await;
     assert_eq!(r.status, 422, "{}", r.body);
     assert!(r.body.contains("Enter a whole number between 1 and 1440."));
@@ -642,13 +665,21 @@ async fn the_settings_page() {
     assert_eq!(r.status, 422);
     assert!(r.body.contains("The smtp from address field must be a valid email address."));
     assert!(r.body.contains(r#"data-rd-pane="email""#) && squash(&r.body).contains("nav-link active"));
+    // the web client's WebRTC rows: off until turned on; a list the client would skip is refused and opens the Server tab
+    assert!(page.contains("Web client uses WebRTC") && page.contains("Web client ICE servers"));
+    assert!(!page.contains(r#"name="web_client_webrtc" value="1" checked"#), "WebRTC is off until someone turns it on");
+    let r = h.post_form("/settings/save", &cookie, &base(&[("web_client_webrtc", "1"), ("web_client_ice_servers", "stun:ok.example.test, turn://no-credentials.example.test")])).await;
+    assert_eq!(r.status, 422, "{}", r.body);
+    assert!(squash(&r.body).contains("turn://no-credentials.example.test is not a STUN or TURN server the client will use"));
+    assert!(r.body.contains(r#"data-rd-pane="server""#));
+    assert_eq!(h.count("settings"), 0);
     let r = h.post_form("/settings/save", &cookie, &base(&[("rdgen_url", "not a url")])).await;
     assert!(r.body.contains("The rdgen url field must be a valid URL."));
     let r = h.post_form("/settings/save", &cookie, &base(&[("oidc_enabled", "1"), ("oidc_discovery_url", "https://idp.example.test"), ("oidc_client_id", "cid")])).await;
     assert!(r.body.contains("Provider URL, client ID and client secret are all required to enable SSO."));
     // a save, with the secrets
     let fields = base(&[
-        ("id_server", " hbbs.example.test:21116 "), ("rdgen_url", "https://rdgen.example.test/"), ("client_url_scheme", "Level1:"), ("downloads_on_login", "1"), ("server_ip_match", "1"), ("hte_scope_enforce", "1"),
+        ("id_server", " hbbs.example.test:21116 "), ("rdgen_url", "https://rdgen.example.test/"), ("client_url_scheme", "Level1:"), ("downloads_on_login", "1"), ("server_ip_match", "1"), ("hte_scope_enforce", "1"), ("web_client_webrtc", "1"), ("web_client_ice_servers", " STUN:stun.example.test:3478 , turn://u:p@turn.example.test "),
         ("relay_address[]", "r1.example.test:21117"), ("relay_geo[]", "eu"), ("relay_address[]", ""), ("relay_geo[]", ""),
         ("oidc_enabled", "1"), ("oidc_discovery_url", "https://idp.example.test/"), ("oidc_client_id", "cid"), ("oidc_client_secret", "topsecret-value"),
         ("smtp_host", "smtp.example.test"), ("smtp_from_address", "c@example.test"), ("smtp_enabled", "1"), ("smtp_password", "smtp-pass-123"), ("email_login_verification", "1"),
@@ -666,6 +697,11 @@ async fn the_settings_page() {
     assert_eq!(h.text("select value from settings where key = 'server_ip_match'"), "1");
     assert_eq!(h.text("select value from settings where key = 'hte_scope_enforce'"), "1");
     assert_eq!(h.text("select value from settings where key = 'email_login_verification'"), "1");
+    assert_eq!(h.text("select value from settings where key = 'webclient_webrtc'"), "1");
+    assert_eq!(h.text("select value from settings where key = 'webclient_ice_servers'"), "stun:stun.example.test:3478,turn://u:p@turn.example.test");
+    assert_eq!(h.count("console_audits where action = 'settings.webclient-webrtc'"), 1);
+    assert_eq!(h.count("console_audits where action = 'settings.webclient-ice'"), 1);
+    assert_eq!(h.count("console_audits where summary like '%u:p%'"), 0, "the TURN password is never written to the log");
     assert_eq!(h.text("select value from settings where key = 'apprise_scope_groups_device_offline'"), "[1]");
     assert_eq!(h.text("select value from settings where key = 'apprise_scope_devices_device_offline'"), "[2]");
     let plain = |key: &str| -> String {
@@ -774,6 +810,24 @@ async fn the_web_client() {
     assert!(cfg["workerUrl"].as_str().unwrap().starts_with("/rdclient/session.worker.js?v="));
     let r = h.get("/webclient", &dana).await;
     assert!(r.body.contains("<title>HTE Remote Web Client</title>"));
+    // WebRTC is off until someone turns it on: the page carries null, so the bundle never offers it
+    assert!(cfg["webrtc"].is_null(), "{cfg}");
+    let config_of = |body: &str| -> serde_json::Value {
+        let c = body.split("data-config=\"").nth(1).unwrap().split('"').next().unwrap().replace("&quot;", "\"").replace("&#039;", "'").replace("&amp;", "&");
+        serde_json::from_str(&c).unwrap()
+    };
+    h.sql("insert into settings (key, value, created_at, updated_at) values ('webclient_webrtc', '1', '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
+    assert_eq!(config_of(&h.get("/webclient?id=1001", &dana).await.body)["webrtc"], json!({"iceServers": ""}));
+    h.sql("insert into settings (key, value, created_at, updated_at) values ('webclient_ice_servers', 'stun:stun.example.test:3478,turn://u:p@turn.example.test', '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
+    assert_eq!(config_of(&h.get("/webclient?id=1001", &dana).await.body)["webrtc"], json!({"iceServers": "stun:stun.example.test:3478,turn://u:p@turn.example.test"}));
+    // a list that no longer parses (edited in the database) is not handed on half-trusted
+    h.sql("update settings set value = 'turn://no-credentials' where key = 'webclient_ice_servers'");
+    assert_eq!(config_of(&h.get("/webclient?id=1001", &dana).await.body)["webrtc"], json!({"iceServers": ""}));
+    h.sql("delete from settings where key in ('webclient_webrtc', 'webclient_ice_servers')");
+    // the terminal page is the same page: same sign-in, same title scheme, and no person without a session gets it
+    let r = h.get("/webclient?id=1001&mode=terminal", &dana).await;
+    assert!(r.body.contains("<title>1001 — HTE Remote Terminal</title>"), "{}", r.body);
+    assert!(h.client.get(format!("{}/webclient?id=1001&mode=terminal", h.url)).send().await.unwrap().status().is_redirection());
 
     // the list: exactly the computers the person may reach now, in /api/peers' order; never another person's
     let ids = |body: &str| -> Vec<String> { serde_json::from_str::<serde_json::Value>(body).unwrap()["devices"].as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap().to_string()).collect() };

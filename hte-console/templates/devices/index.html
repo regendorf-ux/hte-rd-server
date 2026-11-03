@@ -276,6 +276,10 @@
                             {% if native_webclient %}
                                 <a href="/webclient?id={{ d.rustdesk_id }}" target="hte-remote-webclient" rel="noopener" class="rd-act me-2" hx-boost="false"
                                    title="Connect in the browser (native client)"><i class="ri-remote-control-line me-1"></i>Connect</a>
+                                {% if d.terminal %}
+                                    <a href="/webclient?id={{ d.rustdesk_id }}&amp;mode=terminal" target="hte-remote-terminal" rel="noopener" class="rd-act me-2" hx-boost="false"
+                                       title="Open a terminal on this computer in the browser (needs RustDesk 1.4.1 or later on it)"><i class="ri-terminal-box-line me-1"></i>Terminal</a>
+                                {% endif %}
                             {% endif %}
                             {% if webclient_url %}
                                 <a href="{{ webclient_url }}?id={{ d.rustdesk_id }}" target="hte-remote-webclient" rel="noopener" class="rd-act me-2" hx-boost="false"
@@ -370,6 +374,10 @@
                             {% if native_webclient %}
                                 <a href="/webclient?id={{ d.rustdesk_id }}" target="hte-remote-webclient" rel="noopener" class="rd-iconbtn" hx-boost="false"
                                    title="Connect in the browser (native client)"><i class="ri-remote-control-line"></i></a>
+                                {% if d.terminal %}
+                                    <a href="/webclient?id={{ d.rustdesk_id }}&amp;mode=terminal" target="hte-remote-terminal" rel="noopener" class="rd-iconbtn" hx-boost="false"
+                                       title="Open a terminal on this computer in the browser (needs RustDesk 1.4.1 or later on it)"><i class="ri-terminal-box-line"></i></a>
+                                {% endif %}
                             {% endif %}
                             {% if webclient_url %}
                                 <a href="{{ webclient_url }}?id={{ d.rustdesk_id }}" target="hte-remote-webclient" rel="noopener" class="rd-iconbtn" hx-boost="false"

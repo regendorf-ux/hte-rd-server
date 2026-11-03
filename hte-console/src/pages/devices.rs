@@ -496,6 +496,8 @@ fn device_json(
         "rustdesk_id": rid,
         "link": client_link(c, &rid)?,
         "platform": platform_ui(&platform),
+        // the terminal is desktop only (RustDesk 1.4.1 or later on the device)
+        "terminal": platform != "android" && platform != "ios",
         "hostname": s(d, "hostname"),
         "alias": s(d, "alias"),
         "group": group,

@@ -29,6 +29,7 @@ pub mod fake_idp;
 pub mod sqlite;
 pub mod fixture;
 pub mod housekeeping;
+pub mod ice;
 pub mod laravel;
 pub mod link;
 pub mod maintenance;

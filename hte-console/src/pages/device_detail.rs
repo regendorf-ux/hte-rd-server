@@ -334,6 +334,7 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
             "rustdesk_id": rid, "alias": s(&device, "alias"), "hostname": s(&device, "hostname"),
             "title": title,
             "platform": platform_ui(&crate::duplicates::platform(&device.val("os"))),
+            "terminal": !matches!(crate::duplicates::platform(&device.val("os")).as_str(), "android" | "ios"),
             "trashed": trashed, "online": online, "incoming_only": incoming_only, "link": client_link(c, &rid)?,
             "os": os, "os_desc": if truthy(&os_desc) { os_desc } else { "—".into() }, "cpu": s(&device, "cpu"), "memory": s(&device, "memory"),
             "version": s(&device, "version"), "username": s(&device, "username"), "ip": s(&device, "last_online_ip"),

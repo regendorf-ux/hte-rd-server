@@ -2,6 +2,27 @@
 
 New HTE code (AGPL-3.0), not a change to upstream. The fork-level statement is `../HTE.md`.
 
+## 2.2.0 (2026-11-02): the web client of CortenDesk 1.18 (Terminal, 30 fps, keyboards, 2FA, WebRTC)
+Ports what CortenDesk 1.16.0 to 1.18.0 changed in the browser client and its console side; the bundle in `rdclient/` is the upstream 1.18.0 build
+(AGPL-3.0, notices kept), served with the same listed branding substitutions as before (one more: the terminal window's title).
+- Terminal: a Terminal action beside Connect in the device list (table and compact list) and on the device page, for every computer except
+  Android and iOS. It opens `/webclient?id=<id>&mode=terminal`, the bundle's terminal page, in its own window with its own sign-in. It is the same
+  page, so the same rules apply as for Connect: the list of computers is the person's reach, `POST /webclient/credential` hands over a computer's
+  password only for a computer in reach and the password box starts collapsed. Needs RustDesk 1.4.1 or later on the computer.
+- Web client fixes (bundle): up to 30 frames per second (was about 10); non-US keyboard layouts (one æøå, € or £, map mode on Windows and Linux
+  computers, Keyboard menu entry to go back to translated characters); file transfer, terminal and camera windows on RustDesk 1.5 no longer fail with
+  "Wrong password" once the computer's one-time password rotated; a 2FA code is asked for in desktop and terminal sessions. The password
+  box's toggle hides while the 2FA code is asked for.
+- WebRTC in the web client: to a RustDesk 1.5 computer the page offers WebRTC beside the relay and the relay stays the fallback; Session > Details
+  shows the transport. Settings > Server: "Web client uses WebRTC" (**off by default**, unlike CortenDesk) and "Web client ICE servers"
+  (`stun:host:3478, turn://user:password@host:3478`; `src/ice.rs`, the same rules as CortenDesk's: an entry the client would silently skip, such as a
+  TURN server without credentials, is refused). Strategies: new Network group with the `ice-servers` option, stored in canonical form.
+  A direct WebRTC session does not pass the relay, so the relay's own check never sees it; the ID server still judges the offer against per-person
+  reach and needs its own switch (`HTE_REMOTE_WEBRTC=1`), and the page only gets a computer's password for a computer in reach.
+  Without a STUN server of its own the browser uses public ones (Cloudflare, Google); everyone who opens the web client receives the TURN password.
+- No migration, no change to the 41 migrations or the schema. Not ported (not asked): the eleven languages, the ID whitelist, "new devices are
+  incoming only", SSO callback notes.
+
 ## 2.0.1 (2026-10-26): the repository's new name, public docs, nothing of the previous console's runtime
 - The repository is `regendorf-ux/hte-rd-server`: the release check, the About link and the image labels use it (GitHub redirects the old name,
   so 2.0.0's check keeps working).

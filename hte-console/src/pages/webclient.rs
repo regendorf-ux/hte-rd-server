@@ -37,6 +37,8 @@ pub const BRAND_JS: &[(&str, &str, usize)] = &[
     (r#"alt="CortenDesk""#, r#"alt="HTE Remote""#, 1),
     // the browser tab title while connected
     (r"\u2014 CortenDesk`", r"\u2014 HTE Remote`", 1),
+    // ... and in the terminal window (CortenDesk 1.18)
+    (r"\xB7 CortenDesk`", r"\xB7 HTE Remote`", 1),
     // the source map is not served
     ("//# sourceMappingURL=app.js.map", "", 1),
 ];
@@ -204,6 +206,18 @@ fn server_key(c: &Connection) -> Result<String, Fault> {
     Ok(["HTE_CONSOLE_PUBLIC_KEY", "HTE_REMOTE_PUBLIC_KEY"].iter().map(|e| env(e)).find(|v| !v.is_empty()).unwrap_or_default())
 }
 
+/// RustDesk 1.5 WebRTC for the page: `null` while Settings > Server has "Web client uses WebRTC" off (HTE Remote's default), else the
+/// ICE servers the browser should use (`""` = the browser client's built-in public STUN servers). A direct WebRTC session goes
+/// from the browser to the device without the relay; the ID server still carries the offer, and the device still asks for the
+/// password, which `credential` gives only for a computer in the person's reach.
+fn webrtc(c: &Connection) -> Result<Value, Fault> {
+    if !super::settings::webrtc_on(c)? {
+        return Ok(Value::Null);
+    }
+    let saved = String::from_utf8_lossy(&db::setting(c, "webclient_ice_servers", "")?).into_owned();
+    Ok(json!({"iceServers": crate::ice::normalize(&saved).unwrap_or_default()}))
+}
+
 /// GET /webclient[?id=...]
 pub fn show(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
     let (mut ws_id, mut ws_relay) = (env("HTE_REMOTE_WS_ID_URL"), env("HTE_REMOTE_WS_RELAY_URL"));
@@ -237,6 +251,7 @@ pub fn show(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         "myName": my_name,
         "signalToken": web_ticket(user_id, ctx.now),
         "version": ctx.p.n.api_version,
+        "webrtc": webrtc(c)?,
         "workerUrl": format!("/rdclient/session.worker.js?v={v}"),
         // HTE: where the page asks for the person's own password for a computer, and the token that call needs
         "hteCredentialUrl": "/webclient/credential",
@@ -244,7 +259,9 @@ pub fn show(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         "hteCsrf": ctx.session.token().unwrap_or(""),
     });
     let theme = ctx.theme();
-    let title = if peer.is_empty() { "HTE Remote Web Client".to_string() } else { format!("{peer} — HTE Remote Web Client") };
+    // `?mode=terminal` is the bundle's terminal page (the Terminal action in the device list): same sign-in, same password rule
+    let what = if q(req, "mode") == "terminal" { "HTE Remote Terminal" } else { "HTE Remote Web Client" };
+    let title = if peer.is_empty() { what.to_string() } else { format!("{peer} — {what}") };
     Ok(Reply::Html(
         200,
         ctx.render(

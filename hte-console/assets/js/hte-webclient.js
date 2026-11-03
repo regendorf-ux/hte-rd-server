@@ -150,6 +150,8 @@
         buildList();
         el.btn.addEventListener("click", onConnect, true);
         el.peer.addEventListener("keydown", onEnter, true);
+        // a 2FA code is asked for in place of the password row: the toggle belongs to the password row
+        new MutationObserver(function () { el.toggle.style.display = el.row.hidden ? "none" : ""; }).observe(el.row, { attributes: true, attributeFilter: ["hidden"] });
         // a failed login with the kept password: show the box so the person can type another
         var err = document.getElementById("rd-overlay-error");
         if (err) {

@@ -25,6 +25,7 @@ enum K {
     Enum(&'static [(&'static str, &'static str)]),
     Int(i64, i64),
     Text,
+    Ice,
 }
 
 struct O {
@@ -73,6 +74,7 @@ const OPTS: &[O] = &[
     o("keep-awake-during-incoming-sessions", "display", K::Bool, "Keep the device awake during a session", ""),
     o("enable-lan-discovery", "display", K::Bool, "Answer LAN discovery", ""),
     o("allow-auto-update", "client", K::Bool, "Auto update", "Lets the client update itself. The client only exposes this on installed Windows, and on installed macOS that is not a custom build — elsewhere (Linux, portable installs, custom-branded builds) the toggle is hidden, so setting it here may have no visible effect."),
+    o("ice-servers", "network", K::Ice, "WebRTC ICE servers", "Comma-separated STUN and TURN servers for WebRTC connections, e.g. stun:stun.example.com:3478, turn://user:password@turn.example.com:3478. Listing a STUN server replaces the client's built-in public ones; TURN alone keeps them. Every device in the strategy receives the TURN password. Needs RustDesk 1.5.0 or later."),
 ];
 
 const GROUPS: &[(&str, &str, &str, &str)] = &[
@@ -80,6 +82,7 @@ const GROUPS: &[(&str, &str, &str, &str)] = &[
     ("security", "Security & password", "ri-lock-password-line", "How the device authorises incoming connections. Most of these take effect within one heartbeat; the two password-shape options only apply the next time the one-time password is regenerated."),
     ("display", "Capture & display", "ri-macbook-line", "Screen capture and desktop behaviour during a session."),
     ("client", "Client & updates", "ri-refresh-line", "How the RustDesk client maintains itself. Unlike the groups above, these are not about an incoming session."),
+    ("network", "Network", "ri-route-line", "How the client reaches other devices. Read at the start of each connection."),
 ];
 
 fn catalog_json() -> Vec<Value> {
@@ -241,6 +244,20 @@ fn validated_options(f: &Form) -> (Vec<(String, String)>, Map<String, Value>) {
             if !ok {
                 errors.insert(k.clone(), json!(format!("Enter a whole number between {min} and {max}.")));
                 continue;
+            }
+        }
+        let mut v = v;
+        if let K::Ice = x.kind {
+            match crate::ice::normalize(&v) {
+                Some(n) => v = n,
+                None => {
+                    let msg = match crate::ice::first_invalid(&v) {
+                        Some(bad) => format!("{bad} is not a STUN or TURN server the client will use. A TURN entry needs a user name and password: turn://user:password@host:3478."),
+                        None => format!("At most {} servers.", crate::ice::MAX_ENTRIES),
+                    };
+                    errors.insert(k.clone(), json!(msg));
+                    continue;
+                }
             }
         }
         out.push((k.clone(), v));
