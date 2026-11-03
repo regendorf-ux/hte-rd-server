@@ -23,6 +23,23 @@ release tag plus the commits described here; changes to upstream files are small
 - 2.0.1 (2026-10-26): public documentation rewritten without deployment details; the scripts and the separate image that ran
   beside the previous console removed; `hte-console/tests/naming.rs` guards both.
 
+## HTE Remote 2.1.0 (2026-11-02) on upstream CortenDesk Server 1.2.0
+
+- Merged upstream 1.2.0 (hbbs 1.2.0-hte.1): WebRTC signalling for RustDesk 1.5 clients (`src/webrtc_signal.rs`; offers, answers and ICE
+  candidates pass between the two machines of a request, encrypted connections only, 60 s routes, capped per route and per IP), a 5 second
+  write timeout on client connections, WebSocket clients behind a proxy keyed by the forwarded IP and their own port, `hbb_common`
+  at the commit RustDesk 1.5.0 builds with, and dependency updates (`.cargo/audit.toml` lists what no update fixes and why it does not reach
+  `hbbs`/`hbbr`). Upstream's `CHANGES.md` is kept as it is.
+- `src/hte_webrtc.rs` (new): WebRTC signalling is **off unless `HTE_REMOTE_WEBRTC=1`**. A session set up that way goes machine to machine
+  (through a TURN server if the clients are given one) and never through `hbbr`, so the relay gate does not see it; with the switch off
+  `hbbs` behaves as before 1.2.0 (the offer is dropped, no route opens, answers and candidates are not passed on). Hooks, marked `// HTE`,
+  in `src/rendezvous_server.rs`: the punch hole request, `checked_answer`, `handle_ice_candidate`, start-up.
+- Per-person reach is unchanged and covers WebRTC: the offer rides in the punch hole request, which `policy::check_initiator` and
+  `policy::check_target` judge before any route opens; a route is opened only for an admitted request, only by the connection that made it,
+  and reaches only the device offered to. `tests/hte_webrtc_scope.rs` (new) checks this end to end, with the switch off, and the
+  proxy-forwarded WebSocket keying. `tests/webrtc_signalling.rs` (upstream's, Linux only) sets the switch on.
+- Image labels: `com.hte.remote.hbbs-version` 1.2.0-hte.1, `...upstream.cortendesk-server` 1.2.0.
+
 ## hte-console 0.0.1 to 0.8.3 (2026-10-24 to 2026-10-25): the console in Rust, beside the previous console
 
 `hte-console/` is new code, not a change to upstream files. It began as a shadow proxy in front of CortenDesk's console that recorded

@@ -56,6 +56,7 @@ in the inherited process environment.
 | `HTE_REMOTE_CONSOLE_URL` | *(none)* | *(empty; image: `http://127.0.0.1:8080`)* | Base URL of the console, for device policy and per-person reach. Old name `CORTENDESK_CONSOLE_URL` (read with a warning). |
 | `HTE_REMOTE_SERVER_SECRET` | *(none)* | *(empty; image: `/data/.server_secret`)* | Secret shared with that console. Policy stays off unless this and `HTE_REMOTE_CONSOLE_URL` are both set. Old name `CORTENDESK_SERVER_SECRET`. |
 | `HTE_REMOTE_POLICY_INTERVAL` | *(none)* | `5` | Seconds between policy fetches, 1 to 300. Old name `CORTENDESK_POLICY_INTERVAL`. |
+| `HTE_REMOTE_WEBRTC` | *(none)* | *(off)* | `1` lets `hbbs` pass RustDesk 1.5 WebRTC offers, answers and ICE candidates between the two machines of a request (the person's reach is judged first, as for any request). Off, offers are dropped and 1.5 clients use their other transports. A WebRTC session does not go through `hbbr`, so the relay gate does not see it. |
 | `HTE_RELAY_GATE_PORT` | *(none)* | *(off; image: `21120`)* | Loopback UDP port on which `hbbs` tells `hbbr` which relay sessions it admitted; set on both, same host. `hbbr` then pairs only those. |
 
 🅴 = set through the inherited process environment.

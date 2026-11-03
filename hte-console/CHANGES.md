@@ -2,6 +2,10 @@
 
 New HTE code (AGPL-3.0), not a change to upstream. The fork-level statement is `../HTE.md`.
 
+## 2.1.0 (2026-11-02): the ID server and relay move to upstream 1.2.0
+- No console code changed. The image carries `hbbs` 1.2.0-hte.1: WebRTC signalling for RustDesk 1.5 (off unless `HTE_REMOTE_WEBRTC=1`), a 5 second
+  write timeout on client connections, per-connection keys for WebSocket clients behind a proxy, updated dependencies. See `../HTE.md`.
+
 ## 2.0.1 (2026-10-26): the repository's new name, public docs, nothing of the previous console's runtime
 - The repository is `regendorf-ux/hte-rd-server`: the release check, the About link and the image labels use it (GitHub redirects the old name,
   so 2.0.0's check keeps working).
