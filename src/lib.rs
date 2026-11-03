@@ -5,5 +5,7 @@ mod database;
 mod peer;
 mod hte_relay_gate; // HTE
 mod hte_scope; // HTE
+mod hte_webrtc; // HTE
 mod policy;
+mod webrtc_signal;
 mod version;

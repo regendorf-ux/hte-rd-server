@@ -112,7 +112,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             com.hte.remote.hbbs-version=${{ steps.tag.outputs.hbbs }}
             com.hte.remote.upstream.rustdesk-server=1.1.17
-            com.hte.remote.upstream.cortendesk-server=1.1.1
+            com.hte.remote.upstream.cortendesk-server=1.2.0
             com.hte.remote.upstream.cortendesk=1.15.0
             com.hte.remote.upstream.cortendesk-webclient=1.18.0
             org.opencontainers.image.title=HTE Remote server

@@ -43,6 +43,7 @@ It is built on the ID/relay server of [RustDesk Server](https://github.com/rustd
 
 - From **CortenDesk Server** (inherited): signed-in RustDesk clients (1.4.1+) can connect (the server side of the secure
   signalling channel), and `hbbs` enforces a device policy pulled from the console.
+- From **CortenDesk Server 1.2.0** (inherited, off here unless `HTE_REMOTE_WEBRTC=1`): WebRTC signalling for RustDesk 1.5 clients.
 - Added here: per-person reach in `hbbs` (`src/hte_scope.rs`), the relay gate (`src/hte_relay_gate.rs`), and the console in
   Rust (`hte-console/`) in place of CortenDesk's console, all in one non-root container.
 - Not carried over from CortenDesk's console: Apprise notifications, live page updates, the client downloads page.
@@ -143,6 +144,7 @@ read. The most used variables:
 | `HTE_CONSOLE_SWEEPS` | all four (image) | Scheduled sweeps run here: `reach,passwords,stale,diagnostics` |
 | `HTE_CONSOLE_JOBS` | all three (image) | Daily jobs run here: `backup,prune-logs,prune-invitations` |
 | `HTE_CONSOLE_CACHE_PREFIX` | from `APP_NAME` | Cache key prefix in the database (keep it stable: scheduler locks use it) |
+| `HTE_REMOTE_WEBRTC` | off | `1` passes RustDesk 1.5 WebRTC signalling; sessions it sets up bypass the relay (see `HTE.md`) |
 | `HTE_RELAY_GATE_PORT` | `21120` (image) | Loopback port of the relay gate; unset turns the gate off |
 
 Every `HTE_REMOTE_<X>` was `CORTENDESK_<X>` in CortenDesk. The old names are still read when the new one is unset, with a
