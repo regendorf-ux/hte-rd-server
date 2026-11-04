@@ -227,7 +227,7 @@ async fn synthetic_signin_fixtures_replay_with_no_differences() {
     assert!(h.one::<String>(&format!("select password from users where id = {anna}")).starts_with("$2y$12$"));
     assert_eq!(h.one::<String>("select oidc_sub from users where id = 910008"), "sub-5eed-linked");
     assert_eq!(h.one::<String>("select name from users where id = 910009"), "text-5eed0a09");
-    assert_eq!(h.count("alarm_logs where typ = 100"), 1, "one brute-force alarm, then the cooldown");
+    assert_eq!(h.count("alarm_logs where typ = 100"), 0, "seven wrong codes stay under the per-account limit of ten");
     assert_eq!(h.count("oidc_auth_requests"), 0, "every request collected or failed and collected");
     assert_eq!(h.count("devices where rustdesk_id = '990000204' and deleted_at is not null and user_id is null"), 1);
     // no secret of the run reached the log
@@ -383,8 +383,7 @@ async fn totp_prompt_expires_and_counts_tries() {
     for _ in 0..4 {
         assert_eq!(h.tfa_code(s.clone(), "999999".into()).await["error"], "That code is incorrect or has expired.");
     }
-    h.advance(61); // the per-account limiter window passes, the prompt's count does not
-    assert_eq!(h.tfa_code(s.clone(), "999999".into()).await["error"], "That code is incorrect or has expired.");
+        assert_eq!(h.tfa_code(s.clone(), "999999".into()).await["error"], "That code is incorrect or has expired.");
     let now = h.now();
     assert_eq!(h.tfa_code(s, hte_console::totp::at(&key, now / 30)).await["error"], "Your sign-in expired. Sign in again.");
     // a code from the email field, with separators (digits only are kept)
@@ -394,6 +393,34 @@ async fn totp_prompt_expires_and_counts_tries() {
     assert!(v["access_token"].is_string(), "{v}");
     assert_eq!(h.one::<i64>("select totp_last_timestep from users where id = 910006"), h.now() / 30);
     assert_eq!(h.count("login_logs where note = 'wrong verification code'"), 5);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_codes_are_counted_per_account_not_per_address() {
+    let h = harness().await;
+    // ten wrong codes in two prompts from one address ...
+    for _ in 0..2 {
+        let s = h.tfa_challenge().await;
+        for _ in 0..5 {
+            assert_eq!(h.tfa_code(s.clone(), "999999".into()).await["error"].as_str().map(|e| e.starts_with("Too many")), Some(false));
+        }
+    }
+    // ... leave a second address no fresh allowance, even with the right code
+    let key = hte_console::totp::base32_decode(hte_console::totp::REPLAY_SECRET.as_bytes()).unwrap();
+    let s = h.tfa_challenge().await;
+    let good = hte_console::totp::at(&key, h.now() / 30);
+    let v = h
+        .req("POST", "/api/login", Some(json!({"type": "tfa_code", "secret": s, "id": "990000205", "tfaCode": good})), &[("x-forwarded-for", "198.18.9.200")])
+        .await
+        .json();
+    assert!(v["error"].as_str().unwrap().starts_with("Too many attempts. Try again in "), "{v}");
+    assert_eq!(h.count("alarm_logs where typ = 100 and info like '%client-two-factor%'"), 1);
+    // the window is fifteen minutes
+    h.advance(901);
+    let now = h.now();
+    let s = h.tfa_challenge().await;
+    let v = h.tfa_code(s, hte_console::totp::at(&key, now / 30)).await;
+    assert!(v["access_token"].is_string(), "{v}");
 }
 
 // ------------------------------------------------------------------------------------------------- OIDC ---

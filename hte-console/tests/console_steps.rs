@@ -316,8 +316,8 @@ async fn two_factor_enrolment_the_challenge_and_recovery_codes() {
     let again = h.go("POST", "/login/2fa", Some(&g3), &[("_token", &st3), ("code", &codes[0])]).await;
     assert_eq!(again.path(), "/login/2fa");
     assert!(h.get("/login/2fa", Some(&g3)).await.body.contains("That recovery code is invalid or already used."));
-    // the challenge's throttle: five failures, then a wait and one alarm
-    for _ in 0..4 {
+    // the challenge's throttle: ten wrong codes for the account in fifteen minutes, then a wait and one alarm
+    for _ in 0..9 {
         h.go("POST", "/login/2fa", Some(&g3), &[("_token", &st3), ("code", "000000")]).await;
     }
     h.go("POST", "/login/2fa", Some(&g3), &[("_token", &st3), ("code", "000000")]).await;

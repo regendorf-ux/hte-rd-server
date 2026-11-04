@@ -204,15 +204,15 @@ pub(super) fn two_factor_post(p: &Pages, c: &Connection, w: &Web) -> Result<Out,
         return back(p, c, w, &s, data, "/login/2fa", "code", &m, None);
     }
     let code = String::from_utf8_lossy(php::trim(&w.input.string("code")?)).into_owned();
-    let key = format!("2fa:{}|{}", user.id(), w.ip).into_bytes();
-    let info = vec![("ip", Val::str(&w.ip)), ("username", user.val("username")), ("step", Val::str("two-factor")), ("attempts", Val::Int(login::MAX_PER_ACCOUNT as i64))];
-    if let Some(m) = rate_limited(p, c, w, &key, login::MAX_PER_ACCOUNT, login::TYP_BRUTE_FORCE, info)? {
+    let key = crate::signin::code_throttle_key(user.id());
+    let info = vec![("ip", Val::str(&w.ip)), ("username", user.val("username")), ("step", Val::str("two-factor")), ("attempts", Val::Int(crate::signin::CODE_MAX_PER_ACCOUNT as i64))];
+    if let Some(m) = rate_limited(p, c, w, &key, crate::signin::CODE_MAX_PER_ACCOUNT, login::TYP_BRUTE_FORCE, info)? {
         return back(p, c, w, &s, data, "/login/2fa", "code", &m, None);
     }
     let result = if looks_like_recovery(&code) { consume_recovery(c, &user, &code, w.now)? } else { consume_totp(p, c, &user, &code, w.now)? };
     let warning = match result {
         Err(m) => {
-            p.n.limiter.lock().unwrap_or_else(|e| e.into_inner()).hit(&key, login::DECAY, w.now);
+            p.n.limiter.lock().unwrap_or_else(|e| e.into_inner()).hit(&key, crate::signin::CODE_DECAY, w.now);
             return back(p, c, w, &s, data, "/login/2fa", "code", m, None);
         }
         Ok(warning) => warning,
@@ -416,14 +416,14 @@ pub(super) fn email_post(p: &Pages, c: &Connection, w: &Web) -> Result<Out, Faul
         return back(p, c, w, &s, data, "/login/email", "code", &msg, None);
     }
     let code: Vec<u8> = w.input.string("code")?.into_iter().filter(u8::is_ascii_digit).collect();
-    let key = format!("email-verify:{}|{}", user.id(), w.ip).into_bytes();
-    let info = vec![("ip", Val::str(&w.ip)), ("username", user.val("username")), ("step", Val::str("email-verification")), ("attempts", Val::Int(login::MAX_PER_ACCOUNT as i64))];
-    if let Some(msg) = rate_limited(p, c, w, &key, login::MAX_PER_ACCOUNT, login::TYP_BRUTE_FORCE, info)? {
+    let key = crate::signin::code_throttle_key(user.id());
+    let info = vec![("ip", Val::str(&w.ip)), ("username", user.val("username")), ("step", Val::str("email-verification")), ("attempts", Val::Int(crate::signin::CODE_MAX_PER_ACCOUNT as i64))];
+    if let Some(msg) = rate_limited(p, c, w, &key, crate::signin::CODE_MAX_PER_ACCOUNT, login::TYP_BRUTE_FORCE, info)? {
         return back(p, c, w, &s, data, "/login/email", "code", &msg, None);
     }
     let hash = m.get("code_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
     if hash.is_empty() || !laravel::hash_check(&code, &Val::str(&hash))? {
-        p.n.limiter.lock().unwrap_or_else(|e| e.into_inner()).hit(&key, login::DECAY, w.now);
+        p.n.limiter.lock().unwrap_or_else(|e| e.into_inner()).hit(&key, crate::signin::CODE_DECAY, w.now);
         return back(p, c, w, &s, data, "/login/email", "code", "That code is incorrect or has expired.", None);
     }
     p.n.limiter.lock().unwrap_or_else(|e| e.into_inner()).clear(&key);

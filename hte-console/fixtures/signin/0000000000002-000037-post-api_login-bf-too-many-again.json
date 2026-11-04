@@ -2,7 +2,7 @@
   "format": 1,
   "seq": 37,
   "synthetic": true,
-  "source": "still limited; the alarm is not raised again inside ALARM_COOLDOWN",
+  "source": "wrong code 7: the per-account limit is ten in fifteen minutes, so this is still an ordinary wrong code (the limit itself: tests/signin_api.rs)",
   "method": "POST",
   "path": "/api/login",
   "query": {},
@@ -31,7 +31,7 @@
     "body": {
       "kind": "json",
       "value": {
-        "error": "Too many attempts. Try again in {{n}} seconds."
+        "error": "That code is incorrect or has expired."
       }
     }
   }

@@ -33,6 +33,13 @@ pub const CHALLENGE_TTL: i64 = 600;
 pub const CHALLENGE_TRIES: u32 = 5;
 pub const MAX_PER_ACCOUNT: u64 = 5;
 pub const DECAY: i64 = 60;
+/// Wrong 2FA, recovery and e-mailed codes: 10 per account in 15 minutes from any address, one count shared by the console's sign-in and the
+/// RustDesk client's (CortenDesk 1.19.0).
+pub const CODE_MAX_PER_ACCOUNT: u64 = 10;
+pub const CODE_DECAY: i64 = 900;
+pub fn code_throttle_key(user_id: i64) -> Vec<u8> {
+    format!("login-code:{user_id}").into_bytes()
+}
 /// `AlarmLog::TYP_BRUTE_FORCE`
 pub const TYP_BRUTE_FORCE: i64 = 100;
 /// The client keeps polling while it reads exactly this.
@@ -391,8 +398,8 @@ fn verify_code(n: &Native, c: &Connection, input: &Input, ip: &str, now: i64) ->
     if !user.val("is_active").to_bool() || pending.device_id != input.string("id")? {
         return expired();
     }
-    let throttle_key = format!("client-code:{}|{}", user.id(), ip).into_bytes();
-    let too_many = n.limiter.lock().unwrap_or_else(|e| e.into_inner()).too_many(&throttle_key, MAX_PER_ACCOUNT, now);
+    let throttle_key = code_throttle_key(user.id());
+    let too_many = n.limiter.lock().unwrap_or_else(|e| e.into_inner()).too_many(&throttle_key, CODE_MAX_PER_ACCOUNT, now);
     if too_many {
         let mut alarm_key = b"alarm-raised:".to_vec();
         alarm_key.extend_from_slice(hex::encode(sha1_of(&throttle_key)).as_bytes());
@@ -402,11 +409,11 @@ fn verify_code(n: &Native, c: &Connection, input: &Input, ip: &str, now: i64) ->
                 ("ip".to_string(), Val::str(ip)),
                 ("username".to_string(), user.val("username")),
                 ("step".to_string(), Val::str(if pending.tfa { "client-two-factor" } else { "client-email-verification" })),
-                ("attempts".to_string(), Val::Int(MAX_PER_ACCOUNT as i64)),
+                ("attempts".to_string(), Val::Int(CODE_MAX_PER_ACCOUNT as i64)),
             ]);
             let info = php::json_encode(&info).ok_or_else(|| Fault::Other("json".into()))?;
             db::insert(c, "alarm_logs", vec![("rustdesk_id", Val::str("console")), ("typ", Val::Int(TYP_BRUTE_FORCE)), ("info", Val::Str(info.into_bytes()))], &laravel::ts(now))?;
-            tracing::warn!("client sign-in: too many wrong codes for one account and address (alarm raised)");
+            tracing::warn!("client sign-in: too many wrong codes for one account (alarm raised)");
         }
         let wait = n.limiter.lock().unwrap_or_else(|e| e.into_inner()).available_in(&throttle_key, now);
         return error(&format!("Too many attempts. Try again in {wait} seconds."));
@@ -424,7 +431,7 @@ fn verify_code(n: &Native, c: &Connection, input: &Input, ip: &str, now: i64) ->
         if laravel::hash_check(&code, &Val::Str(h.into_bytes()))? { None } else { Some("That code is incorrect or has expired.") }
     };
     if let Some(m) = err {
-        n.limiter.lock().unwrap_or_else(|e| e.into_inner()).hit(&throttle_key, DECAY, now);
+        n.limiter.lock().unwrap_or_else(|e| e.into_inner()).hit(&throttle_key, CODE_DECAY, now);
         login_log(c, input, user.val("username"), Val::Null, false, Val::str("wrong verification code"), ip, now)?;
         pending.tries += 1;
         let left = pending.expires - now;
