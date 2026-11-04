@@ -29,6 +29,7 @@ fn schema(c: &Connection) {
     c.execute_batch(include_str!("schema.sql")).unwrap();
     c.execute_batch(include_str!("schema_phase3.sql")).unwrap();
     c.execute_batch(include_str!("schema_p6.sql")).unwrap();
+    c.execute_batch(hte_console::path::SCHEMA).unwrap(); // the own migration, as the service has run it
 }
 
 fn enc(key: &str, plain: &str) -> String {
@@ -112,6 +113,7 @@ fn bare_world(key: &str) -> World {
     let c = Connection::open(&w.env.database).unwrap();
     c.pragma_update(None, "journal_mode", "WAL").unwrap();
     c.execute_batch(include_str!("schema_live.sql")).unwrap();
+    c.execute_batch(hte_console::path::SCHEMA).unwrap(); // the own migration, as the service has run it
     drop(c);
     w
 }
@@ -610,6 +612,7 @@ fn put_logs(c: &Connection, table: &str, n: i64, at: &str) {
         "alarm_logs" => "(rustdesk_id, created_at) values ('1', ?)",
         "console_audits" => "(username, action, summary, created_at) values ('u', 'a', 's', ?)",
         "notification_deliveries" => "(event, status, title, created_at) values ('e', 's', 't', ?)",
+        "relay_sessions" => "(uuid, rustdesk_id, created_at) values (lower(hex(randomblob(8))), '1', ?)",
         _ => unreachable!(),
     };
     let mut st = c.prepare(&format!("insert into {table} {cols}")).unwrap();
@@ -637,8 +640,8 @@ fn prune_logs_windows() {
         put_logs(&c, t, 4, "2026-10-24 00:00:00"); // recent: stays
     }
     let p = prune::prune_logs(&c, NOW, Some(30), "365").unwrap();
-    assert_eq!(p.total, 12);
-    assert_eq!(p.lines.last().unwrap(), "Pruned 12 log rows older than 30 days.");
+    assert_eq!(p.total, 14);
+    assert_eq!(p.lines.last().unwrap(), "Pruned 14 log rows older than 30 days.");
     assert_eq!(p.lines[0], "audit_connections: deleted 2");
     for t in prune::LOG_TABLES {
         assert_eq!(count(&c, t), 7, "{t}");
@@ -655,7 +658,7 @@ fn prune_logs_windows() {
         assert_eq!(prune::retention_days(&c, "365").unwrap(), want, "{v:?}");
     }
     c.execute("insert or replace into settings (key, value) values ('log_retention_days', '1')", []).unwrap();
-    assert_eq!(prune::prune_logs(&c, NOW, None, "365").unwrap().total, 6 * 3, "one day: the three rows at the old cutoff go; the recent four (after 2026-10-23 04:10:30) stay");
+    assert_eq!(prune::prune_logs(&c, NOW, None, "365").unwrap().total, 7 * 3, "one day: the three rows at the old cutoff go; the recent four (after 2026-10-23 04:10:30) stay");
     for t in prune::LOG_TABLES {
         assert_eq!(count(&c, t), 4, "{t}");
     }

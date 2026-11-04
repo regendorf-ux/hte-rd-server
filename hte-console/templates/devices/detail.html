@@ -277,6 +277,7 @@
                                 <dt class="fw-normal">
                                     {{ c.from }}
                                     <span class="text-muted">· {{ c.ip }}</span>
+                                    {% if c.transport %}<span class="badge bg-secondary-subtle text-secondary">{{ c.transport }}{% if c.relay_size %} {{ c.relay_size }}{% endif %}</span>{% endif %}
                                     {% if c.note %}
                                         <span class="rd-cell-sub rd-conn-note-full"><i class="ri-sticky-note-line"></i> {{ c.note }}{% if c.note_user %} · {{ c.note_user }}{% endif %}</span>
                                     {% endif %}

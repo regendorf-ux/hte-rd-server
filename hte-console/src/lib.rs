@@ -40,6 +40,7 @@ pub mod oidc;
 pub mod pagereplay;
 pub mod pages;
 pub mod passwords;
+pub mod path;
 pub mod passwords_sweep;
 pub mod php;
 pub mod proxy;

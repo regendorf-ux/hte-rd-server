@@ -52,6 +52,7 @@ async fn harness_with(trusted: &str) -> H {
     let db_path = dir.path().join("cortendesk.sqlite");
     let c = Connection::open(&db_path).unwrap();
     c.execute_batch(include_str!("schema.sql")).unwrap();
+    c.execute_batch(hte_console::path::SCHEMA).unwrap(); // the own migration, as the service has run it
     drop(c);
     let hbbs = dir.path().join("db_v2.sqlite3");
     let h = Connection::open(&hbbs).unwrap();

@@ -73,6 +73,7 @@ async fn harness() -> H {
     let crypt = Encrypter::from_app_key(APP_KEY).unwrap();
     let c = Connection::open(&db_path).unwrap();
     c.execute_batch(include_str!("schema_live.sql")).unwrap();
+    c.execute_batch(hte_console::path::SCHEMA).unwrap(); // the own migration, as the service has run it
     c.execute_batch(SEED).unwrap();
     let hash = laravel::hash_make(b"oldpass123").unwrap();
     for (id, username, name, email, admin, active, role) in [

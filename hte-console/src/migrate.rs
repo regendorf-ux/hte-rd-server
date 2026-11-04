@@ -71,7 +71,10 @@ pub struct Own {
     pub sql: &'static str,
 }
 
-pub const OWN: &[Own] = &[Own { name: "2026_10_25_900001_create_hte_console_sessions_table", sql: crate::pages::websession::SCHEMA }];
+pub const OWN: &[Own] = &[
+    Own { name: "2026_10_25_900001_create_hte_console_sessions_table", sql: crate::pages::websession::SCHEMA },
+    Own { name: "2026_11_04_900001_create_relay_sessions_and_connection_paths", sql: crate::path::SCHEMA },
+];
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
@@ -147,6 +150,7 @@ mod tests {
     fn db(with: &[&str]) -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(r#"create table "migrations" ("id" integer primary key autoincrement not null, "migration" varchar not null, "batch" integer not null)"#).unwrap();
+        c.execute_batch(r#"create table "audit_connections" ("id" integer primary key autoincrement not null, "rustdesk_id" varchar not null)"#).unwrap();
         for (i, m) in with.iter().enumerate() {
             c.execute(r#"insert into "migrations" ("migration", "batch") values (?, ?)"#, params![m, (i / 10 + 1) as i64]).unwrap();
         }
@@ -167,18 +171,32 @@ mod tests {
     fn applies_ours_once_and_records_it_in_the_next_batch() {
         let c = db(&PHP_MIGRATIONS);
         let before = check(&c).unwrap();
-        assert_eq!(before.own_pending.len(), 1);
+        assert_eq!(before.own_pending.len(), OWN.len());
         assert_eq!(before.php_recorded, 41);
         let after = run(&c).unwrap();
         assert!(after.own_pending.is_empty() && after.php_missing.is_empty() && after.unknown.is_empty());
         let batch: i64 = c.query_row(r#"select "batch" from "migrations" where "migration" = ?"#, params![OWN[0].name], |r| r.get(0)).unwrap();
         assert_eq!(batch, 6, "the previous console's last batch is 5 in this fixture (41 rows, 10 per batch), ours is the next");
+        let second: i64 = c.query_row(r#"select "batch" from "migrations" where "migration" = ?"#, params![OWN[1].name], |r| r.get(0)).unwrap();
+        assert_eq!(second, 7, "each pending migration of ours takes the next batch");
         let t: i64 = c.query_row(r#"select count(*) from sqlite_master where name = 'hte_console_sessions'"#, [], |r| r.get(0)).unwrap();
         assert_eq!(t, 1);
         // again: nothing to do, no second row
         run(&c).unwrap();
         let n: i64 = c.query_row(r#"select count(*) from "migrations" where "migration" = ?"#, params![OWN[0].name], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn the_connection_path_migration_keeps_the_rows_it_finds() {
+        let c = db(&PHP_MIGRATIONS);
+        c.execute(r#"insert into "audit_connections" ("rustdesk_id") values ('123456789')"#, []).unwrap();
+        run(&c).unwrap();
+        let (id, path, relay): (String, Option<String>, Option<i64>) =
+            c.query_row(r#"select "rustdesk_id", "path", "relay_session_id" from "audit_connections""#, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((id.as_str(), path, relay), ("123456789", None, None), "an old row reads as 'unknown'");
+        let t: i64 = c.query_row(r#"select count(*) from sqlite_master where name = 'relay_sessions'"#, [], |r| r.get(0)).unwrap();
+        assert_eq!(t, 1);
     }
 
     #[test]

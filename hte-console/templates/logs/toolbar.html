@@ -16,6 +16,13 @@
         <option value="{{ t.id }}"{{ ' selected' if filters.type == (t.id ~ '') else '' }}>{{ t.label }}</option>
         {% endfor %}
     </select>
+    {% elif kind == "connections" %}
+    <select class="form-select rd-toolbar-filter" name="path" aria-label="Path">
+        <option value="">Any path</option>
+        {% for p in paths %}
+        <option value="{{ p.id }}"{{ ' selected' if filters.path == p.id else '' }}>{{ p.label }}</option>
+        {% endfor %}
+    </select>
     {% elif kind == "console" %}
     <select class="form-select rd-toolbar-filter" name="action" aria-label="Action">
         <option value="">All actions</option>

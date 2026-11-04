@@ -3,6 +3,7 @@
 //!   GET  /api/server/policy       ServerLinkController::policy   (ServerLink::policy + HTE Remote's scope block)
 //!   POST /api/server/local-addrs  ServerLinkController::localAddrs
 //!   POST /api/server/refusals     App\Hte\RefusalsController::store (alarm 102)
+//!   POST /api/server/relay-sessions  the relay's report of each session it carried (path.rs)
 //!
 //! behind `VerifyServerSecret` (404 while no secret is set, 401 for a wrong one, `hash_equals`) and
 //! `throttle:600,1,server-link`. hbbs runs inside the CortenDesk container and reaches the console at
@@ -82,6 +83,7 @@ enum Route {
     Policy,
     LocalAddrs,
     Refusals,
+    RelaySessions,
 }
 
 impl Route {
@@ -90,6 +92,7 @@ impl Route {
             Route::Policy => "api/server/policy",
             Route::LocalAddrs => "api/server/local-addrs",
             Route::Refusals => "api/server/refusals",
+            Route::RelaySessions => "api/server/relay-sessions",
         }
     }
     fn methods(self) -> &'static [&'static str] {
@@ -103,7 +106,7 @@ impl Route {
 /// The server-link paths, for main.rs to merge in front of phase 1/2's router.
 pub fn routes(native: Arc<Native>, link: Arc<Link>) -> Router {
     let mut r = Router::new();
-    for (path, route) in [("/api/server/policy", Route::Policy), ("/api/server/local-addrs", Route::LocalAddrs), ("/api/server/refusals", Route::Refusals)] {
+    for (path, route) in [("/api/server/policy", Route::Policy), ("/api/server/local-addrs", Route::LocalAddrs), ("/api/server/refusals", Route::Refusals), ("/api/server/relay-sessions", Route::RelaySessions)] {
         r = r.route(path, any(move |s, c, req| handle(s, c, req, route)));
     }
     r.with_state((native, link))
@@ -237,6 +240,10 @@ async fn handle(State((n, link)): State<(Arc<Native>, Arc<Link>)>, ConnectInfo(p
                 Err(body) => Reply::Json(422, body),
                 Ok(data) => refusals(&lock(), &data, now),
             }),
+            Route::RelaySessions => Ok(match validate::validate(input.all(), SESSION_RULES) {
+                Err(body) => Reply::Json(422, body),
+                Ok(data) => relay_sessions(&lock(), &data, now),
+            }),
         }
     })
     .await;
@@ -319,6 +326,18 @@ const REFUSAL_RULES: &[(&str, &[Rule])] = &[
     ("refusals.*.at", &[Rule::Nullable, Rule::Integer, Rule::Min(0)]),
 ];
 
+const SESSION_RULES: &[(&str, &[Rule])] = &[
+    ("sessions", &[Rule::Required, Rule::Array, Rule::Max(500)]),
+    ("sessions.*.uuid", &[Rule::Required, Rule::String, Rule::Max(64)]),
+    ("sessions.*.id", &[Rule::Required, Rule::String, Rule::Max(100)]),
+    ("sessions.*.conn_type", &[Rule::Nullable, Rule::Integer, Rule::Min(0), Rule::Max(255)]),
+    ("sessions.*.controller_ip", &[Rule::Nullable, Rule::Ip]),
+    ("sessions.*.device_ip", &[Rule::Nullable, Rule::Ip]),
+    ("sessions.*.started_at", &[Rule::Nullable, Rule::Integer, Rule::Min(0)]),
+    ("sessions.*.ended_at", &[Rule::Nullable, Rule::Integer, Rule::Min(0)]),
+    ("sessions.*.bytes", &[Rule::Nullable, Rule::Integer, Rule::Min(0)]),
+];
+
 /// `HTE_CONSOLE_SERVER_LINK_MAX_BODY_BYTES` (default 4 MiB): 500 refusals of the longest values allowed, written with
 /// JSON escapes, stay below it.
 fn max_body() -> usize {
@@ -370,6 +389,15 @@ fn refusals(c: &Connection, data: &php::Arr, now: i64) -> Reply {
     match crate::reach::record_refusals(c, &list, now) {
         Ok(n) => Reply::Json(200, format!(r#"{{"recorded":{n}}}"#)),
         Err(f) => fail("server/refusals", &f),
+    }
+}
+
+/// POST /api/server/relay-sessions, on the validated data
+fn relay_sessions(c: &Connection, data: &php::Arr, now: i64) -> Reply {
+    let list = data.get_str("sessions").map(|v| v.to_array()).unwrap_or_default();
+    match crate::path::store_relay_sessions(c, &list, now) {
+        Ok(n) => Reply::Json(200, format!(r#"{{"stored":{n}}}"#)),
+        Err(f) => fail("server/relay-sessions", &f),
     }
 }
 

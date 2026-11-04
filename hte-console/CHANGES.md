@@ -2,6 +2,21 @@
 
 New HTE code (AGPL-3.0), not a change to upstream. The fork-level statement is `../HTE.md`.
 
+## 2.3.0 (2026-11-04): the ID server and relay move to upstream 1.4.0; connection paths, Release ID, new devices incoming only
+`hbbs` is 1.4.0-hte.1 (upstream CortenDesk Server 1.3.0 and 1.4.0: `../HTE.md`). In the console:
+- **Connection paths** (CortenDesk 1.19's idea, written here). `hbbs` tags each request it sends a device (LAN, hole punch, WebRTC, relay) and RustDesk
+  1.5 devices echo the tag in their connection audit (`audit_connections.path`); `hbbr` reports every session it carries, with both addresses and the
+  bytes (`POST /api/server/relay-sessions`, table `relay_sessions`). The one relay session that carried a connection is linked to that connection
+  (`path.rs`: the row that logged in, within 30 s of the relay's start, and only while the relay lived as long as the row), because a punch hole
+  starts several attempts at once and the losing ones also post an audit row. Where it shows: a Path column and filter (Any, LAN, Direct, Relay,
+  Unknown) in the connection log, with the bytes a relayed session carried; two CSV columns; the device page's recent connections; and a bar on the
+  Overview, "How sessions connected", for the chosen range. A connection with no tag and no relay report reads Unknown (an older device, or a session that
+  was never tagged). A relayed session is Relay whatever the tag said: a hole punch can still end on the relay.
+- Schema: one more own migration (`2026_11_04_900001_create_relay_sessions_and_connection_paths`): the table `relay_sessions` and two nullable columns on
+  `audit_connections` (`path`, `relay_session_id`). Old rows are left as they are; the previous console ignores the columns, so the image before this one
+  still runs on the migrated database. `relay_sessions` is pruned with the other logs.
+- `rusqlite` 0.32 (was 0.27): `hbbs` moved to sqlx 0.8, and the two must link the same `libsqlite3-sys` 0.30.
+
 ## 2.2.0 (2026-11-02): the web client of CortenDesk 1.18 (Terminal, 30 fps, keyboards, 2FA, WebRTC)
 Ports what CortenDesk 1.16.0 to 1.18.0 changed in the browser client and its console side; the bundle in `rdclient/` is the upstream 1.18.0 build
 (AGPL-3.0, notices kept), served with the same listed branding substitutions as before (one more: the terminal window's title).

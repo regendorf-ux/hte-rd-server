@@ -6,7 +6,7 @@ use crate::sqlite::{self as db, P};
 use rusqlite::Connection;
 
 /// `PruneLogs::TABLES`: each has a `created_at` column.
-pub const LOG_TABLES: [&str; 6] = ["audit_connections", "audit_file_transfers", "login_logs", "alarm_logs", "console_audits", "notification_deliveries"];
+pub const LOG_TABLES: [&str; 7] = ["audit_connections", "audit_file_transfers", "login_logs", "alarm_logs", "console_audits", "notification_deliveries", "relay_sessions"]; // HTE: relay_sessions (path.rs)
 const CHUNK: usize = 10_000;
 
 /// The configured window: `(int) (Setting::get('log_retention_days', (string) config('cortendesk.log_retention_days')) ?: 0)`.

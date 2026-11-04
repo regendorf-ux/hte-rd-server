@@ -122,20 +122,21 @@ pub fn connection(n: &Native, c: &Connection, input: &Input, ip: &str, now: i64)
                     None => ip.as_bytes().to_vec(),
                 };
                 let uuid = input.string("uuid")?;
-                db::insert(
-                    c,
-                    "audit_connections",
-                    vec![
-                        ("action", Val::str("new")),
-                        ("conn_id", Val::Int(conn_id)),
-                        ("rustdesk_id", Val::Str(id.clone())),
-                        ("ip", Val::Str(ip_v)),
-                        ("session_id", Val::Str(session.clone())),
-                        ("uuid", Val::Str(uuid)),
-                        ("guid", Val::str(&laravel::uuid4())),
-                    ],
-                    &ts,
-                )?;
+                let mut cols = vec![
+                    ("action", Val::str("new")),
+                    ("conn_id", Val::Int(conn_id)),
+                    ("rustdesk_id", Val::Str(id.clone())),
+                    ("ip", Val::Str(ip_v)),
+                    ("session_id", Val::Str(session.clone())),
+                    ("uuid", Val::Str(uuid)),
+                    ("guid", Val::str(&laravel::uuid4())),
+                ];
+                // HTE: how hbbs set it up, echoed by RustDesk 1.5 devices (path.rs)
+                if let Some(path) = input.get("conn_audit_ref").and_then(crate::path::from_tag) {
+                    cols.push(("path", Val::str(path)));
+                }
+                db::insert(c, "audit_connections", cols, &ts)?;
+                crate::path::refresh(c, &Val::Str(id.clone()), now)?; // HTE
             }
             return Ok(());
         }
@@ -149,6 +150,7 @@ pub fn connection(n: &Native, c: &Connection, input: &Input, ip: &str, now: i64)
         if action == Val::str("close") {
             if let Some(mut row) = open {
                 db::update_dirty(c, "audit_connections", &mut row, vec![("action", Val::str("close"), Cast::Plain), ("closed_at", Val::str(&ts), Cast::Date)], &ts)?;
+                crate::path::refresh(c, &row.val("rustdesk_id"), laravel::parse_ts(&row.val("created_at")).unwrap_or(now))?; // HTE
             }
             return Ok(());
         }
@@ -170,9 +172,10 @@ pub fn connection(n: &Native, c: &Connection, input: &Input, ip: &str, now: i64)
         if !session.is_empty() {
             attrs.push(("session_id", Val::Str(session.clone()), Cast::Plain));
         }
-        match open {
+        let opened = match open {
             Some(mut row) => {
                 db::update_dirty(c, "audit_connections", &mut row, attrs, &ts)?;
+                laravel::parse_ts(&row.val("created_at")).unwrap_or(now)
             }
             None => {
                 let uuid = input.string("uuid")?;
@@ -186,8 +189,10 @@ pub fn connection(n: &Native, c: &Connection, input: &Input, ip: &str, now: i64)
                 cols.push(("ip", Val::str(ip)));
                 cols.push(("guid", Val::str(&laravel::uuid4())));
                 db::insert(c, "audit_connections", cols, &ts)?;
+                now
             }
-        }
+        };
+        crate::path::refresh(c, &Val::Str(id.clone()), opened)?; // HTE
         Ok(())
     })
 }

@@ -72,6 +72,7 @@ async fn harness_with(secret: &str) -> H {
     let c = Connection::open(&db_path).unwrap();
     c.execute_batch(include_str!("schema.sql")).unwrap();
     c.execute_batch(include_str!("schema_phase3.sql")).unwrap();
+    c.execute_batch(hte_console::path::SCHEMA).unwrap(); // the own migration, as the service has run it
     c.execute_batch(SEED).unwrap();
     drop(c);
     let hbbs = dir.path().join("db_v2.sqlite3");
@@ -632,6 +633,45 @@ async fn local_addresses_are_kept_newest_first_and_never_rolled_back() {
     // an entry that escapes the wildcard rules (a key with a dot) reaches the controller: the previous console's warning, a 500
     let r = h.post("/api/server/local-addrs", json!({"addrs": {"a.b": {"ip": "198.18.3.1"}}})).await;
     assert_eq!((r.status, r.json()), (500, json!({"message": "Server Error"})));
+}
+
+/// HTE: connection paths. A device echoes hbbs's tag in its audit; hbbr reports the sessions it carried; the one it carried is linked.
+#[tokio::test]
+async fn a_session_is_told_apart_by_its_tag_and_by_the_relay_s_report() {
+    let h = harness().await;
+    let path = |conn: i64| h.one::<Option<String>>(&format!("select path from audit_connections where conn_id = {conn}"));
+    let relay = |conn: i64| h.one::<Option<i64>>(&format!("select relay_session_id from audit_connections where conn_id = {conn}"));
+    let audit = |body: Value| {
+        let h = &h;
+        async move {
+            let r = h.send("POST", "/api/audit/conn", None, &[], Some(body)).await;
+            assert_eq!(r.status, 200, "{}", r.body);
+        }
+    };
+    // the tag of a 1.5 device is kept; a tag that is not ours, or none, leaves the path empty
+    audit(json!({"action": "new", "id": "990003001", "conn_id": 801, "ip": "198.18.3.5", "session_id": 0, "uuid": "u", "conn_audit_ref": "cd1/punch"})).await;
+    audit(json!({"action": "new", "id": "990003001", "conn_id": 802, "ip": "198.18.3.5", "session_id": 0, "uuid": "u", "conn_audit_ref": "elsewhere/punch"})).await;
+    audit(json!({"action": "new", "id": "990003001", "conn_id": 803, "ip": "198.18.3.5", "session_id": 0, "uuid": "u"})).await;
+    assert_eq!((path(801).as_deref(), path(802), path(803)), (Some("punch"), None, None));
+    // the attempt that logs in; the relay reports a session for that device while it is open
+    audit(json!({"id": "990003001", "conn_id": 801, "type": 0, "peer": ["990003002", "Front"], "session_id": 0, "uuid": "u"})).await;
+    let started = h.now();
+    let r = h.post("/api/server/relay-sessions", json!({"sessions": [{"uuid": "r-1", "id": "990003001", "conn_type": 0, "controller_ip": "198.18.3.7", "device_ip": "198.18.3.5", "started_at": started}]})).await;
+    assert_eq!((r.status, r.body.as_str()), (200, r#"{"stored":1}"#));
+    assert_eq!(relay(801), Some(1), "the row that logged in, though the tag said punch: the relay report wins");
+    assert_eq!((relay(802), relay(803)), (None, None));
+    // closed, with its size; a late copy of the open does not undo the close
+    h.advance(60);
+    h.post("/api/server/relay-sessions", json!({"sessions": [{"uuid": "r-1", "id": "990003001", "ended_at": h.now(), "bytes": 5_000_000}]})).await;
+    h.post("/api/server/relay-sessions", json!({"sessions": [{"uuid": "r-1", "id": "990003001", "started_at": started}]})).await;
+    let (ended, bytes): (Option<String>, i64) = h.db().query_row("select ended_at, bytes from relay_sessions where uuid = 'r-1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((ended.is_some(), bytes), (true, 5_000_000));
+    assert_eq!(h.count("relay_sessions"), 1);
+    assert_eq!(relay(801), Some(1));
+    // a malformed report is a 422 and stores nothing
+    let r = h.post("/api/server/relay-sessions", json!({"sessions": [{"id": "990003001"}, {"uuid": "r-2", "id": "x", "device_ip": "not an address"}]})).await;
+    assert_eq!(r.status, 422);
+    assert_eq!(h.count("relay_sessions"), 1);
 }
 
 #[tokio::test]

@@ -274,7 +274,10 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
     if can_audit {
         let note_users: Vec<i64> = vec![];
         let _ = note_users;
-        for r in db::rows(c, r#"select * from "audit_connections" where "rustdesk_id" = ? order by "created_at" desc limit 10"#, &[P(Val::str(&rid))])? {
+        let recent = db::rows(c, r#"select * from "audit_connections" where "rustdesk_id" = ? order by "created_at" desc limit 10"#, &[P(Val::str(&rid))])?;
+        let relayed = crate::path::relay_bytes(c, &recent)?; // HTE: how each got through
+        for r in recent {
+            let (transport, carried) = logs::transport_of(&r, &relayed);
             let created = ts_of(&r, "created_at");
             let closed = ts_of(&r, "closed_at");
             let note_user = match r.val("note_user_id") {
@@ -284,6 +287,7 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
             let from = { let a = s(&r, "from_name"); if truthy(&a) { a } else { let b = s(&r, "from_peer"); if truthy(&b) { b } else { "unknown".into() } } };
             conns.push(json!({
                 "from": from, "ip": s(&r, "ip"), "note": s(&r, "note"), "note_user": note_user,
+                "transport": transport.map(|_| crate::path::transport_label(transport)), "relay_size": carried.map(crate::path::human_bytes),
                 "ago": created.map(|t| time::ago(t, now, false)).unwrap_or_default(),
                 "duration": match (closed, created) { (Some(a), Some(b)) => Some(time::short_full(a, b)), _ => None },
             }));

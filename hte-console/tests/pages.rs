@@ -68,6 +68,7 @@ async fn harness() -> H {
     let crypt = Encrypter::from_app_key(APP_KEY).unwrap();
     let c = Connection::open(&db_path).unwrap();
     c.execute_batch(include_str!("schema_live.sql")).unwrap();
+    c.execute_batch(hte_console::path::SCHEMA).unwrap(); // the own migration, as the service has run it
     c.execute_batch(SEED).unwrap();
     let hash = laravel::hash_make(b"oldpass123").unwrap();
     for (id, username, name, email, admin, active, role) in [
@@ -406,6 +407,50 @@ async fn who_sees_what() {
     assert!(after.get("denied").is_none());
 }
 
+/// HTE: the connection log's Path column and filter, the CSV's Path and size, and the dashboard's bar of how sessions connected.
+#[tokio::test(flavor = "multi_thread")]
+async fn connection_paths_show_in_the_log_the_export_and_the_dashboard() {
+    let h = harness().await;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    h.sql(&format!("insert into relay_sessions (uuid, rustdesk_id, started_at, ended_at, bytes, created_at) values ('r1', '2002', '{now}', '{now}', 12345678, '{now}')"));
+    h.sql(&format!(
+        "insert into audit_connections (rustdesk_id, from_peer, from_name, ip, conn_type, path, relay_session_id, created_at) values
+           ('2001', '555', 'Lan PC', '10.1.1.1', 0, 'lan', null, '{now}'),
+           ('2002', '555', 'Relay PC', '10.1.1.2', 0, 'punch', 1, '{now}'),
+           ('2003', '555', 'Direct PC', '10.1.1.3', 0, 'punch-webrtc', null, '{now}'),
+           ('2004', '555', 'Old PC', '10.1.1.4', 0, null, null, '{now}'),
+           ('2005', '555', 'Punch PC', '10.1.1.5', 0, 'punch', null, '{now}')"
+    ));
+    let cookie = h.login(&sid("paths"), 1, json!({}));
+    let all = h.get("/logs/connections", &cookie).await.body;
+    for needle in ["<th>Path</th>", "LAN", "Hole punch", "WebRTC", "12.3 MB"] {
+        assert!(all.contains(needle), "{needle}");
+    }
+    // a punch that ended on the relay is counted as relay, not direct
+    let only = |f: &str| {
+        let h = &h;
+        let cookie = cookie.clone();
+        let f = f.to_string();
+        async move { h.get(&format!("/logs/connections?path={f}"), &cookie).await.body }
+    };
+    let relay = only("relay").await;
+    assert!(relay.contains("Relay PC") && !relay.contains("Direct PC") && !relay.contains("Lan PC") && !relay.contains("Old PC"));
+    let direct = only("direct").await;
+    assert!(direct.contains("Direct PC") && direct.contains("Punch PC") && !direct.contains("Relay PC"));
+    assert!(only("lan").await.contains("Lan PC"));
+    let unknown = only("unknown").await;
+    assert!(unknown.contains("Old PC") && !unknown.contains("Lan PC"));
+    // the pager keeps the filter; an unknown value is no filter
+    assert!(only("relay").await.contains("value=\"relay\" selected"));
+    assert!(only("nonsense").await.contains("Lan PC"));
+    let csv = h.get("/logs/connections/export?path=relay", &cookie).await.body;
+    assert!(csv.contains(",Relay,12345678,"), "{csv}");
+    assert!(!csv.contains("Lan PC"), "{csv}");
+    // the dashboard: the five sessions (one of them relayed)
+    let dash = h.get("/", &cookie).await.body;
+    assert!(dash.contains("How sessions connected") && dash.contains("5 sessions"), "{dash}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn csv_exports() {
     let h = harness().await;
@@ -423,10 +468,10 @@ async fn csv_exports() {
     let r = h.get("/logs/connections/export?search=1001", &cookie).await;
     assert_eq!(
         r.body,
-        "When,\"Controlled Device\",\"From ID\",\"From Name\",Type,IP,\"Closed At\",\"Duration (s)\",Note,\"Note By\"\n\"2025-10-25 03:10:00\",1001,555,\"Front PC\",Terminal,10.1.1.1,\"2025-10-25 03:12:05\",125,\"ticket 42\",jdoe\n"
+        "When,\"Controlled Device\",\"From ID\",\"From Name\",Type,IP,Path,\"Relayed (bytes)\",\"Closed At\",\"Duration (s)\",Note,\"Note By\"\n\"2025-10-25 03:10:00\",1001,555,\"Front PC\",Terminal,10.1.1.1,,,\"2025-10-25 03:12:05\",125,\"ticket 42\",jdoe\n"
     );
     let r = h.get("/logs/connections/export", &cookie).await;
-    assert!(r.body.contains("\"Type 9\",,active,,,"), "{}", r.body);
+    assert!(r.body.contains("\"Type 9\",,,,active,,,"), "{}", r.body);
     // a person with no role gets the export of what they see
     let dana = h.login(&sid("danaexport"), 2, json!({}));
     let r = h.get("/logs/alarms/export", &dana).await;

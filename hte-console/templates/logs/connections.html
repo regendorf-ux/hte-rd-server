@@ -15,6 +15,7 @@
                     <th>Controlled Device</th>
                     <th>From</th>
                     <th>Type</th>
+                    <th>Path</th>
                     <th>IP</th>
                     <th>Duration</th>
                     <th>Note</th>
@@ -40,6 +41,14 @@
                                 <span class="badge bg-primary-subtle text-primary"><i class="{{ conn.type_icon }} me-1"></i>{{ conn.type_label }}</span>
                             {% endif %}
                         </td>
+                        <td>
+                            {% if conn.transport %}
+                                <span class="badge bg-secondary-subtle text-secondary">{{ conn.transport_label }}</span>
+                                {% if conn.transport == "relay" and conn.relay_size %}<span class="rd-cell-sub">{{ conn.relay_size }}</span>{% endif %}
+                            {% else %}
+                                <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
                         <td class="rd-mono">{{ conn.ip_dash }}</td>
                         <td>
                             {% if conn.closed %}
@@ -63,7 +72,7 @@
                     </tr>
                 {% else %}
                     <tr>
-                        <td colspan="7" class="rd-empty-cell">
+                        <td colspan="8" class="rd-empty-cell">
                             <div class="rd-empty">
                                 <div class="rd-empty-icon"><i class="ri-remote-control-line"></i></div>
                                 <p class="rd-empty-title">No connections match your filters.</p>
@@ -105,7 +114,7 @@
                             <span class="badge bg-primary-subtle text-primary">{{ conn.type_label }}</span>
                         {% endif %}
                         <span class="rd-mini-sub text-end">
-                            {{ conn.ip_dash }} · {{ conn.ago_short }}
+                            {% if conn.transport %}{{ conn.transport_label }}{% if conn.transport == "relay" and conn.relay_size %} {{ conn.relay_size }}{% endif %} · {% endif %}{{ conn.ip_dash }} · {{ conn.ago_short }}
                         </span>
                     </div>
                     {% if conn.has_note %}

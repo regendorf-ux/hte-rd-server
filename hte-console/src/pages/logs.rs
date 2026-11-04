@@ -27,6 +27,8 @@ struct Filters {
     search: String,
     kind: String,
     action: String,
+    /// HTE: the connection log's Path filter (`relay`, `direct`, `lan`, `unknown`)
+    path: String,
     date_from: String,
     date_to: String,
     per_page: i64,
@@ -42,7 +44,7 @@ impl Filters {
         let per_page = text(req, "perPage").parse::<i64>().ok().filter(|n| PER_PAGES.contains(n)).unwrap_or(20);
         // The previous console's pagination: `page` is a positive integer, anything else is the first page
         let page = text(req, "page").parse::<i64>().ok().filter(|n| *n >= 1).unwrap_or(1);
-        Filters { search: text(req, "search"), kind: text(req, "type"), action: text(req, "action"), date_from: text(req, "dateFrom"), date_to: text(req, "dateTo"), per_page, page }
+        Filters { search: text(req, "search"), kind: text(req, "type"), action: text(req, "action"), path: text(req, "path"), date_from: text(req, "dateFrom"), date_to: text(req, "dateTo"), per_page, page }
     }
 
     /// The query string (with a trailing `&` when not empty) the pager's links repeat: what `#[Url(except: '')]`
@@ -57,6 +59,9 @@ impl Filters {
         }
         if with_action && !self.action.is_empty() {
             pairs.push(("action", self.action.as_bytes()));
+        }
+        if crate::path::filter_sql(&self.path).is_some() {
+            pairs.push(("path", self.path.as_bytes()));
         }
         if !self.date_from.is_empty() {
             pairs.push(("dateFrom", self.date_from.as_bytes()));
@@ -356,6 +361,9 @@ fn conn_where(ctx: &Ctx, c: &Connection, f: &Filters) -> Result<Where, Fault> {
     if !f.search.is_empty() {
         w.like_any(&["rustdesk_id", "from_peer", "from_name", "ip", "note"], &f.search);
     }
+    if let Some(sql) = crate::path::filter_sql(&f.path) {
+        w.add(sql, vec![]); // HTE
+    }
     dates(&mut w, f);
     Ok(w)
 }
@@ -380,7 +388,18 @@ fn note_users(c: &Connection, rows: &[Row]) -> Result<std::collections::HashMap<
     Ok(out)
 }
 
-fn conn_json(r: &Row, now: i64, users: &std::collections::HashMap<i64, String>) -> Value {
+/// HTE: how the row got through (`path.rs`) and, for a relayed one, what the relay carried (None until the relay reports it).
+pub(crate) fn transport_of(r: &Row, relayed: &std::collections::HashMap<i64, i64>) -> (Option<&'static str>, Option<i64>) {
+    let session = match r.val("relay_session_id") {
+        Val::Int(i) => Some(i),
+        _ => None,
+    };
+    let path = if r.is_null("path") { None } else { Some(s(r, "path")) };
+    let transport = crate::path::transport(path.as_deref(), session.is_some());
+    (transport, session.and_then(|i| relayed.get(&i).copied()))
+}
+
+fn conn_json(r: &Row, now: i64, users: &std::collections::HashMap<i64, String>, relayed: &std::collections::HashMap<i64, i64>) -> Value {
     let ctype = r.val("conn_type");
     let t = ctype.to_int();
     // the views compare `=== 1` and `=== 2`: strictly the integers
@@ -398,11 +417,15 @@ fn conn_json(r: &Row, now: i64, users: &std::collections::HashMap<i64, String>) 
         Val::Int(i) => users.get(&i).cloned(),
         _ => None,
     };
+    let (transport, carried) = transport_of(r, relayed);
     json!({
         "id": r.id(),
         "when": when_str(r),
         "ago": created.map(|t| time::ago(t, now, false)).unwrap_or_default(),
         "ago_short": created.map(|t| time::ago(t, now, true)).unwrap_or_default(),
+        "transport": transport.unwrap_or(""),
+        "transport_label": crate::path::transport_label(transport),
+        "relay_size": carried.map(crate::path::human_bytes).unwrap_or_default(),
         "rustdesk_id": s(r, "rustdesk_id"),
         "from_dash": dash(&from_peer),
         "from_name": s(r, "from_name"),
@@ -425,12 +448,15 @@ pub fn connections(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault>
     let w = conn_where(ctx, c, &f)?;
     let l = paginated(c, "audit_connections", &w, &f)?;
     let users = note_users(c, &l.rows)?;
+    let relayed = crate::path::relay_bytes(c, &l.rows)?;
     let layout = ctx.layout(c, "logs.connections", "Connection Log", "Logs")?;
+    let paths: Vec<Value> = crate::path::FILTERS.iter().map(|(k, l)| json!({"id": k, "label": l})).collect();
     let page = json!({
         "path": "/logs/connections",
-        "filters": {"search": f.search, "dateFrom": f.date_from, "dateTo": f.date_to, "perPage": f.per_page},
+        "filters": {"search": f.search, "dateFrom": f.date_from, "dateTo": f.date_to, "perPage": f.per_page, "path": if crate::path::filter_sql(&f.path).is_some() { f.path.as_str() } else { "" }},
+        "paths": paths,
         "query": f.query(false, false),
-        "rows": l.rows.iter().map(|r| conn_json(r, ctx.now, &users)).collect::<Vec<_>>(),
+        "rows": l.rows.iter().map(|r| conn_json(r, ctx.now, &users, &relayed)).collect::<Vec<_>>(),
         "pager": l.page,
     });
     Ok(Reply::Html(200, ctx.render("logs/connections.html", layout, page)?))
@@ -441,12 +467,14 @@ pub fn connections_export(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply,
     let w = conn_where(ctx, c, &f)?;
     let rows = export_rows(c, "audit_connections", &w)?;
     let users = note_users(c, &rows)?;
+    let relayed = crate::path::relay_bytes(c, &rows)?;
     Ok(csv(
         "connection-log.csv",
-        &["When", "Controlled Device", "From ID", "From Name", "Type", "IP", "Closed At", "Duration (s)", "Note", "Note By"],
+        &["When", "Controlled Device", "From ID", "From Name", "Type", "IP", "Path", "Relayed (bytes)", "Closed At", "Duration (s)", "Note", "Note By"],
         rows.iter()
             .map(|r| {
                 let (created, closed) = (ts_of(r, "created_at"), ts_of(r, "closed_at"));
+                let (transport, carried) = transport_of(r, &relayed);
                 vec![
                     when_str(r),
                     s(r, "rustdesk_id"),
@@ -454,6 +482,8 @@ pub fn connections_export(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply,
                     s(r, "from_name"),
                     conn_label(r.val("conn_type").to_int()),
                     s(r, "ip"),
+                    transport.map(|_| crate::path::transport_label(transport).to_string()).unwrap_or_default(),
+                    carried.map(|b| b.to_string()).unwrap_or_default(),
                     closed.map(crate::laravel::ts).unwrap_or_else(|| "active".to_string()),
                     match (closed, created) {
                         (Some(a), Some(b)) => (a - b).abs().to_string(),

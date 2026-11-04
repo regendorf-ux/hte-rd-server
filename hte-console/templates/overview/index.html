@@ -80,6 +80,41 @@
     </div>
 </div>
 
+{% if paths %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title">How sessions connected</h5>
+                <div class="rd-card-sub">{{ paths.total }} {{ 'session' | plural(paths.total) }} · last {{ range }} days · <a href="/logs/connections">Connection log</a></div>
+            </div>
+            <div class="card-body">
+                {% if paths.total > 0 %}
+                <ul class="rd-barlist" id="chart-paths">
+                    {% for p in paths['items'] %}
+                    <li class="rd-barlist-item {{ p.tone }}">
+                        <div class="rd-barlist-head">
+                            <a class="rd-barlist-label" href="/logs/connections?path={{ p.id }}">{{ p.label }}</a>
+                            <span class="rd-barlist-count">{{ p.count }}</span>
+                            <span class="rd-barlist-pct">{{ p.pct }}%</span>
+                        </div>
+                        <div class="rd-barlist-track"><div class="rd-barlist-fill" style="width: {{ p.width }}%"></div></div>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="rd-empty">
+                    <div class="rd-empty-icon"><i class="ri-route-line"></i></div>
+                    <p class="rd-empty-title">No sessions yet</p>
+                    <p class="rd-empty-text">Each session shows here once it has connected: on the LAN, direct by hole punch or WebRTC, or through the relay.</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="row rd-row-equal">
     {% if audit %}
     <div class="{{ 'col-xl-5' if has_alerts else 'col-xl-7' }}">

@@ -208,6 +208,27 @@ pub fn index(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         None
     };
 
+    // HTE: how the sessions of the range got through (path.rs): LAN, direct (hole punch or WebRTC), relay, unknown
+    let paths = if audit {
+        let (cond, cp) = limit(&ids);
+        let mut p = vec![P(Val::str(&format!("{} 00:00:00", day(ctx.now - (range - 1) * 86400))))];
+        p.extend(cp);
+        let rows = db::rows(c, &format!(r#"select {} as "transport", count(*) as "c" from "audit_connections" where "created_at" >= ? and "from_peer" is not null and "from_peer" != ''{cond} group by "transport""#, crate::path::TRANSPORT_SQL), &p)?;
+        let n = |k: &str| rows.iter().filter(|r| s(r, "transport") == k).map(|r| r.val("c").to_int()).sum::<i64>();
+        let total: i64 = crate::path::FILTERS.iter().map(|(k, _)| n(k)).sum();
+        let tones = [("lan", "rd-tone-teal"), ("direct", "rd-tone-blue"), ("relay", "rd-tone-amber"), ("unknown", "rd-tone-muted")];
+        Some(json!({
+            "total": total,
+            "items": crate::path::FILTERS.iter().map(|(k, label)| {
+                let count = n(k);
+                let tone = tones.iter().find(|t| t.0 == *k).map_or("rd-tone-muted", |t| t.1);
+                json!({"id": k, "label": label, "count": count, "tone": tone, "pct": if total > 0 { (count as f64 / total as f64 * 100.0).round() as i64 } else { 0 }, "width": if total > 0 { (count as f64 / total as f64 * 1000.0).round() / 10.0 } else { 0.0 }})
+            }).collect::<Vec<_>>(),
+        }))
+    } else {
+        None
+    };
+
     // platform mix and versions over the devices the person sees
     let w = visible(c, &ctx.user, false)?;
     let devs = db::rows(c, &format!(r#"select "os" from "devices"{} order by "id" asc"#, w.sql()), &w.params.clone())?;
@@ -276,7 +297,7 @@ pub fn index(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
     let has_alerts = alarms.is_some();
     let page = json!({
         "stats": stats(ctx, c)?, "sess": if audit { sessions(ctx, c)? } else { Value::Null }, "audit": audit, "range": range, "ranges": RANGES,
-        "connections": series.as_ref().map(|v| v.to_string()).unwrap_or_default(), "has_connections": series.is_some(),
+        "connections": series.as_ref().map(|v| v.to_string()).unwrap_or_default(), "has_connections": series.is_some(), "paths": paths.unwrap_or(Value::Null),
         "platforms": platforms, "platform_total": platform_total, "platform_json": json!({"labels": labels, "values": values}).to_string(),
         "versions": versions, "version_total": vtotal, "alarms": alarms.unwrap_or_default(), "has_alerts": has_alerts,
         "prompt_setup": prompt_setup, "mail_warning": rw_setting && !mail_on,
