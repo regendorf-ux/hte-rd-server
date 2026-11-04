@@ -54,6 +54,11 @@ in the inherited process environment.
 | `ALWAYS_USE_RELAY` 🅴 | *(none)* | `N` | `Y` forces every session through a relay (disables direct/hole‑punched connections). At runtime, send `always-use-relay Y` or `always-use-relay N` to the `hbbs` [loopback console](#runtime-console). |
 | `DB_URL` 🅴 | *(none)* | `./db_v2.sqlite3` | Path/URL of the SQLite database file. See [Database](#database). |
 | `MAX_DATABASE_CONNECTIONS` 🅴 | *(none)* | `1` | Size of the SQLite connection pool. |
+| `MAX_NEW_IDS_PER_IP` | `--max-new-ids-per-ip` | `300` | **Available since 1.4.0.** Distinct IDs that may register from one client IP. Past it, a new ID from that IP gets `TOO_FREQUENT` and stays offline, so connecting to it reports "ID does not exist"; IDs already counted keep working. The count starts over after 24 hours with no registration from that IP, or 24 hours after the limit was reached. Raise it when many machines share one public IP. Check or clear an IP with `ip-blocker <ip> [-]` on the [console](#runtime-console). |
+| `MAX_REGISTER_BURST_PER_IP` | `--max-register-burst-per-ip` | `30` | **Available since 1.4.0.** Registrations from one client IP in a row, without a 60-second pause, before further ones get `TOO_FREQUENT` (the client retries). |
+| `MAX_PUNCH_REQUESTS` | *(none)* | `100000` | **Available since 1.4.0.** Punch requests kept in memory for the `punch-requests` [console](#runtime-console) command; the oldest is dropped when full. `0` keeps none. |
+| `UDP_PUNCH` | *(none)* | `Y` | **Available since 1.4.0.** UDP hole punching for RustDesk 1.5 controllers: `hbbs` answers the controller's UDP NAT test with its public UDP port (rate-limited), passes that port to the device, and takes the device's UDP reply. `N` turns it off: no UDP reply at all, as before. |
+| `IPV6_PUNCH` | *(none)* | `Y` | **Available since 1.4.0.** IPv6 peer-to-peer for RustDesk 1.5 controllers: `hbbs` passes the controller's global IPv6 address to the device and the device's back (rate-limited per controller and per /64). `N` turns it off. |
 | `HTE_REMOTE_CONSOLE_URL` | *(none)* | *(empty; image: `http://127.0.0.1:8080`)* | Base URL of the console, for device policy and per-person reach. Old name `CORTENDESK_CONSOLE_URL` (read with a warning). |
 | `HTE_REMOTE_SERVER_SECRET` | *(none)* | *(empty; image: `/data/.server_secret`)* | Secret shared with that console. Policy stays off unless this and `HTE_REMOTE_CONSOLE_URL` are both set. Old name `CORTENDESK_SERVER_SECRET`. |
 | `HTE_REMOTE_POLICY_INTERVAL` | *(none)* | `5` | Seconds between policy fetches, 1 to 300. Old name `CORTENDESK_POLICY_INTERVAL`. |
@@ -123,11 +128,26 @@ printf 'always-use-relay Y' | nc 127.0.0.1 21115
 # hbbs: show the device policy state
 printf 'policy' | nc 127.0.0.1 21115
 
+# hbbs: forget a device so another machine can take its ID (since 1.4.0)
+printf 'release-id 123456789' | nc 127.0.0.1 21115
+
 # hbbr: list commands on its relay PORT (21117 by default)
 printf 'h' | nc 127.0.0.1 21117
 ```
 
 Use the corresponding configured ports if you changed `PORT`.
+
+`release-id <id>` (short: `rid`) deletes the device from `db_v2.sqlite3` and
+from memory, and closes its WebSocket or TCP registration if it has one. Use it
+when a reinstalled machine cannot take back its ID because the old entry still
+owns it. It answers one line:
+
+| Reply | Meaning |
+|---|---|
+| `OK <id>` | Released. It was not online. |
+| `OK <id> online` | Released. It was online; if that machine still runs, it registers the ID again within seconds. |
+| `NOT_FOUND <id>` | No device has that ID. |
+| `ERROR <reason>` | Nothing was changed: no ID was given, or the database failed (also logged). |
 
 ---
 
@@ -185,6 +205,17 @@ To supply your own key pair, place `id_ed25519` and `id_ed25519.pub` in the
 process's **current working directory** before first start. That directory may
 differ from the directory containing the executable. In the `hte-rd-server`
 image the working directory is `/data/rustdesk`.
+
+Since 1.4.0:
+
+* A new `id_ed25519` is created with mode `0600`. An existing one with group or
+  other permission bits is changed to `0600` at start; `0400` is left as it is.
+* A missing `id_ed25519.pub` is written from the private key, mode `0644`. One
+  that does not match the private key is logged as a warning and rewritten
+  from it: the server signs with the private key either way.
+* An `id_ed25519` that cannot be opened or read, or does not hold a valid key,
+  stops the server with an error. Before, an unreadable one made `hbbs` write a
+  new `id_ed25519.pub` that did not match it.
 
 ---
 

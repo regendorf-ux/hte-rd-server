@@ -62,18 +62,30 @@ fn now_secs() -> u64 {
         .unwrap_or_default()
 }
 
+/// HTE Remote's name (`HTE_REMOTE_<X>`) first; the old `CORTENDESK_<X>` when the new one is unset or empty (as in `policy.rs`).
+fn setting(rest: &str) -> Option<String> { // HTE
+    let new = format!("HTE_REMOTE_{rest}");
+    if let Some(v) = crate::common::get_arg_opt(&new).filter(|v| !v.trim().is_empty()) {
+        return Some(v);
+    }
+    let old = format!("CORTENDESK_{rest}");
+    let v = crate::common::get_arg_opt(&old).filter(|v| !v.trim().is_empty())?;
+    log::warn!("environment: {old} is the old name of {new}; it is read for now, rename it");
+    Some(v)
+}
+
 pub fn start() {
-    let url = crate::common::get_arg_opt("CORTENDESK_CONSOLE_URL")
+    let url = setting("CONSOLE_URL")
         .unwrap_or_default()
         .trim()
         .trim_end_matches('/')
         .to_owned();
-    let secret = crate::common::get_arg_opt("CORTENDESK_SERVER_SECRET")
+    let secret = setting("SERVER_SECRET")
         .unwrap_or_default()
         .trim()
         .to_owned();
     if url.is_empty() || secret.is_empty() {
-        log::info!("Console link off: set CORTENDESK_CONSOLE_URL and CORTENDESK_SERVER_SECRET to report relay sessions");
+        log::info!("Console link off: set HTE_REMOTE_CONSOLE_URL and HTE_REMOTE_SERVER_SECRET to report relay sessions");
         return;
     }
     ON.store(true, Ordering::SeqCst);

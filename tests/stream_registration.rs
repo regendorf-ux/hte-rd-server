@@ -62,6 +62,9 @@ impl Server {
         Self::start_with_proxy("127.0.0.0/8,::1/128").await
     }
     async fn start_with_proxy(proxies: &str) -> Self {
+        Self::start_with(proxies, &[], &[]).await
+    }
+    async fn start_with(proxies: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let port = free_port();
         let child = Command::new(env!("CARGO_BIN_EXE_hbbs"))
@@ -74,6 +77,8 @@ impl Server {
                 "--trusted-proxies",
                 proxies,
             ])
+            .args(args)
+            .envs(envs.iter().copied())
             .env_remove("TRUSTED_PROXIES")
             .env_remove("DB_URL")
             .env("TEST_HBBS", "no")
@@ -646,4 +651,154 @@ async fn ws_relay_request_is_tagged_and_each_request_gets_one_reply() {
     })
     .await;
     assert!(extra.is_err(), "an unrequested reply got through: {extra:?}");
+}
+
+async fn udp_exchange(udp: &UdpSocket, port: u16, msg: RendezvousMessage) -> Option<RendezvousMessage> {
+    udp.send_to(&msg.write_to_bytes().unwrap(), ("127.0.0.1", port))
+        .await
+        .unwrap();
+    let mut buf = [0; 1024];
+    match timeout(Duration::from_millis(500), udp.recv_from(&mut buf)).await {
+        Ok(Ok((n, _))) => Some(RendezvousMessage::parse_from_bytes(&buf[..n]).unwrap()),
+        _ => None,
+    }
+}
+
+/// Peer IDs over 253 bytes are refused on every path an ID comes in by
+/// (issue #5): RegisterPk over WebSocket and UDP, RegisterPeer over UDP and
+/// punch hole requests.
+#[tokio::test]
+async fn ids_over_253_bytes_are_refused() {
+    let server = Server::start().await;
+    let longest = "7".repeat(253);
+    let too_long = "8".repeat(254);
+    let mut ws = server.ws().await;
+    send(&mut ws, registration(&too_long, b"uuid-too-long")).await;
+    assert_eq!(
+        recv(&mut ws).await.register_pk_response().result.enum_value(),
+        Ok(register_pk_response::Result::UUID_MISMATCH)
+    );
+    register(&mut ws, &longest).await;
+
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let udp_reply = |msg: RendezvousMessage| udp_exchange(&udp, server.port, msg);
+    let reply = udp_reply(registration(&too_long, b"uuid-too-long")).await.unwrap();
+    assert_eq!(
+        reply.register_pk_response().result.enum_value(),
+        Ok(register_pk_response::Result::UUID_MISMATCH)
+    );
+    let register_peer = |id: &str| {
+        let mut msg = RendezvousMessage::new();
+        msg.set_register_peer(RegisterPeer {
+            id: id.to_owned(),
+            ..Default::default()
+        });
+        msg
+    };
+    assert!(udp_reply(register_peer(&too_long)).await.is_none());
+    assert!(udp_reply(register_peer(&longest)).await.unwrap().has_register_peer_response());
+
+    let mut initiator = server.ws().await;
+    send(&mut initiator, punch(&too_long, &server.key)).await;
+    assert_eq!(
+        recv(&mut initiator).await.punch_hole_response().failure.enum_value(),
+        Ok(punch_hole_response::Failure::ID_NOT_EXIST)
+    );
+    let mut initiator = server.ws().await;
+    send(&mut initiator, punch(&longest, &server.key)).await;
+    assert!(recv(&mut ws).await.has_punch_hole());
+}
+
+/// Write, under `ws`, the start of a masked binary frame that announces
+/// `announced` bytes, and `sent` of them. A server without a limit waits for
+/// the rest.
+async fn partial_ws_frame(ws: &mut Ws, announced: u64, sent: usize) -> &mut TcpStream {
+    use hbb_common::tokio::io::AsyncWriteExt;
+    let tokio_tungstenite::MaybeTlsStream::Plain(sock) = ws.get_mut() else {
+        panic!("plain socket")
+    };
+    let mut frame = vec![0x82, 0xff];
+    frame.extend_from_slice(&announced.to_be_bytes());
+    frame.extend_from_slice(&[1, 2, 3, 4]);
+    frame.resize(frame.len() + sent, 0);
+    let _ = sock.write_all(&frame).await;
+    sock
+}
+
+/// Signalling messages over 1 MiB close the connection, on WebSocket and TCP;
+/// a large online request still fits (issue #7).
+#[tokio::test]
+async fn signalling_messages_over_1_mib_are_refused() {
+    use hbb_common::tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let server = Server::start().await;
+    // 40000 IDs, about 560 KB.
+    let ids: Vec<String> = (0..40_000).map(|i| format!("{:09}", 100_000_000 + i)).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    assert_eq!(server.online(&ids).await.len(), 5_000);
+
+    // The start of a 2 MiB WebSocket frame.
+    let mut ws = server.ws().await;
+    let sock = partial_ws_frame(&mut ws, 2 << 20, 64 << 10).await;
+    let closed = timeout(Duration::from_secs(3), async {
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "oversized WebSocket message");
+
+    let mut tcp = TcpStream::connect(("127.0.0.1", server.port)).await.unwrap();
+    tcp.write_all(&((((1u32 << 20) + 1) << 2) | 3).to_le_bytes())
+        .await
+        .unwrap();
+    let closed = timeout(Duration::from_secs(3), async {
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = tcp.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "oversized TCP frame");
+}
+
+/// The per-IP limits on new IDs and on registrations in a row are settings
+/// (issue #12): here 3 IDs, from the command line, and 6 registrations, from
+/// the environment.
+#[tokio::test]
+async fn per_ip_registration_limits_are_configurable() {
+    let server = Server::start_with(
+        "127.0.0.0/8,::1/128",
+        &["--max-new-ids-per-ip", "3"],
+        &[("MAX_REGISTER_BURST_PER_IP", "6")],
+    )
+    .await;
+    let result = |msg: RendezvousMessage| msg.register_pk_response().result.enum_value();
+    // One connection per registration, as a device holds one per ID.
+    let mut held = Vec::new();
+    for id in ["123456731", "123456732", "123456733"] {
+        let mut ws = server.ws().await;
+        register(&mut ws, id).await;
+        held.push(ws);
+    }
+    // A fourth new ID from the same IP is refused...
+    let mut ws = server.ws().await;
+    send(&mut ws, registration("123456734", b"123456734")).await;
+    assert_eq!(result(recv(&mut ws).await), Ok(register_pk_response::Result::TOO_FREQUENT));
+    // ...while known IDs still register, up to 6 registrations in a row.
+    for id in ["123456731", "123456732"] {
+        let mut ws = server.ws().await;
+        register(&mut ws, id).await;
+        held.push(ws);
+    }
+    let mut ws = server.ws().await;
+    send(&mut ws, registration("123456733", b"123456733")).await;
+    assert_eq!(result(recv(&mut ws).await), Ok(register_pk_response::Result::TOO_FREQUENT));
+    // Another IP has its own count.
+    let mut other = server.ws_ip("203.0.113.56").await;
+    register(&mut other, "123456734").await;
 }

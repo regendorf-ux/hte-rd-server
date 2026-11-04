@@ -7,6 +7,29 @@ is licensed under the GNU AGPL-3.0. This file lists the modifications and their 
 upstream's own record stays in `CHANGES.md`, and the credits are in `NOTICE` and `hte-console/NOTICE`. Branch `hte` is upstream's
 release tag plus the commits described here; changes to upstream files are small hooks marked `// HTE`.
 
+## HTE Remote 2.3.0 (2026-11-04) on upstream CortenDesk Server 1.4.0 (1.3.0 and 1.4.0 merged)
+
+- Merged upstream 1.3.0 and 1.4.0 (hbbs 1.4.0-hte.1): desktop clients over WebSocket or TCP (`src/stream_connection.rs`), connection paths
+  (`hbbs` tags each request LAN, hole punch, WebRTC or relay; `hbbr` reports relayed sessions, `src/relay_report.rs`), UDP and IPv6
+  hole punching for RustDesk 1.5 (`src/punch.rs`), the `release-id <id>` admin command, key exchange version 1, `MAX_NEW_IDS_PER_IP`,
+  stricter key-file handling, sqlx 0.8. Upstream's `CHANGES.md` is kept as it is.
+- **`TRUSTED_PROXIES` replaces `X-Real-IP`**: `hbbs` and `hbbr` believe `X-Forwarded-For` on the WebSocket ports only from a proxy listed
+  in `TRUSTED_PROXIES` (default none). The image's entrypoint warns when it is unset; the README says what to set it to. The console reads
+  the same variable.
+- Hooks kept, marked `// HTE`, and re-checked against the new code: the relay gate (`src/relay_server.rs`: listener start, the check at
+  pairing, taken after 1.4.0's single-lock lookup; `src/rendezvous_server.rs`: `admit` on a `RequestRelay` and on a `RelayResponse`), and
+  `hte_webrtc`. `hte_scope::target_answers` knows a device registered over TCP or WebSocket by its stream's address (upstream no longer
+  sets the UDP address for those), so the relay gate admits their sessions.
+- `src/relay_report.rs` reads `HTE_REMOTE_CONSOLE_URL` and `HTE_REMOTE_SERVER_SECRET` (old names as a fallback), as `policy.rs` does.
+- Per-person reach before UDP and IPv6 punching: `check_initiator` and `check_target` run before `grant_punch`, so a refused request passes
+  no UDP port or IPv6 address to the device; a punch request over UDP is dropped by upstream 1.4.0. `tests/hte_scope_punch.rs` (new).
+  `tests/hte_keys.rs` (new): the key layout the image writes starts `hbbs` and `hbbr` under 1.4.0's rules. `tests/hte_db_upgrade.rs` (new): a
+  database written by sqlx 0.6 reads as before under sqlx 0.8.
+- hte-console 2.3.0: `rusqlite` 0.32 (it must link the same `libsqlite3-sys` 0.30 as hbbs's sqlx 0.8); connection paths (a Path column in the
+  connection log and a dashboard bar, from `hbbs`'s request tags and `hbbr`'s relay reports), a Release ID button on the device page, and
+  the setting "new devices incoming only". Details in `hte-console/CHANGES.md`.
+- Image labels: `com.hte.remote.hbbs-version` 1.4.0-hte.1, `...upstream.cortendesk-server` 1.4.0.
+
 ## HTE Remote 2.0.0 (2026-10-25 / 2026-10-26): one image, its own name
 
 - `Dockerfile.hte` (new) builds `ghcr.io/regendorf-ux/hte-rd-server:<x.y.z>`: `hbbs`, `hbbr` and `hte-console` under `supervisord`,

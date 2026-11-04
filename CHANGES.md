@@ -14,6 +14,400 @@ of upstream so the two are never mistaken for each other.
 
 ---
 
+## 1.4.0 (2026-11-04)
+
+### hbbs: UDP hole punching and IPv6 peer-to-peer for RustDesk 1.5 (2026-11-04)
+
+Issue #18. Built on this fork's design; the implementation proposed upstream
+by @NotOfficer, rustdesk-server PR 734, was used as a reference only.
+
+Design. A *punch route* records one controller connection whose request was
+granted a UDP port or had its IPv6 address sent to the device. It is keyed by
+that connection's address, holds the device ID and the address the device
+registered from, lives 30 seconds or until the connection closes, and is the
+only thing that lets a reply carry a UDP or IPv6 address back. One UDP reply
+to an address taken from a packet is added, the NAT test answer, and it is
+rate-limited; nothing else new sends UDP. The policy check, licence key,
+WebSocket handling and `cd1/` tags are unchanged and come first. New
+`src/punch.rs`.
+
+- UDP `TestNatRequest` on the main port is answered with
+  `TestNatResponse { port }` only, never a `ConfigUpdate`: a few bytes for a
+  three-byte request. At most 60 in a burst and 30 a second per source IP
+  (IPv6: per /64), and 2000 a second in all; the table of sources holds at
+  most 65,536 and refuses new ones when full. The 1.5 controller learns its
+  public UDP port from it. Before, UDP `TestNatRequest` was ignored, so 1.5
+  controllers always sent `udp_port = 0`.
+- A `PunchHoleRequest` passes `udp_port` and `socket_addr_v6` on to the device
+  (`PunchHole`; `FetchLocalAddr` gets only the IPv6 address) when: the
+  controller reports 1.5.0 or newer, did not set `force_relay`, nothing forces
+  the relay (WebSocket on either side, `ALWAYS_USE_RELAY`, LAN/WAN mismatch),
+  and the device is not known to run an older client. The IPv6 address must
+  be global unicast (2000::/3) with a port, and at most 60 in a burst, then
+  one a second, go out per controller IP and per target /64 (a target in the
+  controller's own /64 counts only for the controller). Older controllers send
+  these fields too, but their UDP and IPv6 attempts hold up the relay fallback
+  for up to 20 seconds, so they get a TCP punch as before.
+- A UDP `PunchHoleSent` (the device's answer to a UDP punch, sent from the
+  socket it will punch with) is taken only for an open route that granted
+  UDP, naming that route's device, from that device's registered host (IPv4:
+  same address; IPv6: same /64), once. The controller then gets a
+  `PunchHoleResponse` with `is_udp` and the datagram's source address, over
+  its TCP connection. Anything else is dropped and leaves the route waiting.
+  It never causes a UDP packet. Before, every UDP `PunchHoleSent` was ignored.
+- The device's own IPv6 address, in `PunchHoleSent`, `LocalAddr` or
+  `RelayResponse`, goes back to the controller only on a route that sent the
+  controller's address, from the device's registered host, never over
+  WebSocket, global unicast with a port, within the per-/64 limit. Before,
+  `RelayResponse.socket_addr_v6` was passed on unchecked.
+- A device that answers with a version before 1.5, from its registered host,
+  is remembered (at most 100,000, for 7 days) and gets no UDP port or IPv6
+  address: it would punch with probes a 1.5 controller does not answer.
+- Routes: at most 10,000, and 64 per controller IP.
+- `UDP_PUNCH=N` and `IPV6_PUNCH=N` turn either off. Both are logged at start.
+- Not done: WebRTC answers in a UDP `PunchHoleSent` are passed on like those
+  over TCP (length-checked), but not tied to the WebRTC route, as before.
+- README (Configuration) and `docs/environment-variables.md`.
+- Tests: unit tests in `src/punch.rs` (address checks, every limit, route
+  matching, the older-client record); `tests/udp_punch.rs` against a real
+  `hbbs`: the NAT test and its limit, the whole UDP punch with IPv6 both ways,
+  a forged and a repeated answer, IPv6 only on a route and only global,
+  older controllers, `force_relay`, a device that answers as 1.4.9,
+  `ALWAYS_USE_RELAY`, and an unrequested UDP answer.
+
+### CodeQL: skip hbb_common; device uuids no longer logged (2026-11-04)
+
+- New `.github/codeql/codeql-config.yml`, used by
+  `.github/workflows/codeql.yml`: `libs/hbb_common`, RustDesk's library used
+  unmodified as a submodule, is left out of the scan. Most open alerts were
+  in its client code and test vectors. Everything else is still scanned.
+- `hbbs` no longer logs the two device uuids when a registration's uuid does
+  not match the stored one; it logs the ID and that another machine
+  registered it.
+
+### Dependency advisories (2026-11-04)
+
+For the open Dependabot alerts.
+
+- `deadpool` without its default features, keeping only `managed`, which is
+  all `src/database.rs` uses. That drops `config` 0.11 and with it `nom` 5
+  and `lexical-core` 0.7 (RUSTSEC-2023-0086).
+- `.cargo/audit.toml` accepts, with the reason beside each:
+  RUSTSEC-2023-0059 (`users`, unaligned read; `hbb_common` only re-exports
+  the crate and nothing calls it) next to the already accepted
+  RUSTSEC-2025-0040, and RUSTSEC-2021-0145 (`atty`, unaligned read in its
+  Windows-only code; the release binaries are Linux only).
+- `clap` stays at 2. Moving this project's own flags to clap 4 would remove
+  neither `clap` 2 nor `atty` from `Cargo.lock`: `hbb_common` pulls both in
+  through `bindgen` 0.59 and its loggers.
+- `cargo audit` passes; what remains are informational warnings
+  (unmaintained crates, and `zstd-safe` and `tokio` soundness notes for code
+  these servers do not call).
+
+### hbbs: signalling key exchange version 1 (2026-11-04)
+
+Issue #17. Requested upstream by @Silvarion, rustdesk-server issue 709; based
+on the implementation proposed upstream by @NotOfficer, rustdesk-server
+PR 734. Matches the client side in RustDesk 1.5.0 and `hbb_common`'s
+`KxTranscript` / `Encrypt::new_split`.
+
+- The offer on each plain-TCP connection now advertises version 1: beside
+  the signed throwaway key it carries `version = 1` and `signed_params`, the
+  server's signature over `KxParams` (that key and the version), and bit 255
+  of the key is set. X25519 ignores that bit, so clients before 1.5 use the
+  key as before, ignore the new fields and answer version 0, which is served
+  as before: one key for both directions.
+- A 1.5 client sees the bit, requires the signed parameters, and answers
+  version 1. Both sides then split the exchanged key into one key per
+  direction, derived from a transcript of the exchange (both public keys and
+  both versions). A man in the middle cannot strip the version without the
+  client noticing, and a version past 1 is refused.
+- Nothing else changes: the offer is still sent at once, only on plain TCP,
+  only with a server key pair, and a client that sends plain text first
+  stays in plain text.
+- Tests: the unit tests in `src/rendezvous_server.rs` run the handshake as a
+  1.4 and as a 1.5 client, check the marker and signatures, a stripped
+  offer, per-direction keys and an unknown version;
+  `tests/signalling_handshake.rs` adds a 1.5 client against a real `hbbs`.
+
+### sqlx 0.8, without database TLS (2026-11-04)
+
+Issue #14. Based on a change proposed upstream by @jahvari, rustdesk-server
+PR 731.
+
+- `sqlx` 0.6 to 0.8.6, with only the `runtime-tokio`, `sqlite`, `macros`,
+  `chrono` and `json` features. The old `runtime-tokio-rustls` feature only
+  opened TLS for Postgres and MySQL, which this server never uses. That takes
+  out `libsqlite3-sys` 0.24 (now 0.30, bundling a current SQLite),
+  `rustls` 0.20, `webpki` 0.22, `webpki-roots` 0.22 and `ring` 0.16.
+- An invalid `DB_URL` option is an error instead of a panic.
+- `.cargo/audit.toml`: removed the accepted advisories whose crates are no
+  longer in `Cargo.lock`: RUSTSEC-2022-0090, RUSTSEC-2024-0363,
+  RUSTSEC-2024-0336, RUSTSEC-2025-0009, RUSTSEC-2026-0349, RUSTSEC-2026-0381,
+  and RUSTSEC-2026-0194 and -0195 (`quick-xml`, already gone). Added
+  RUSTSEC-2023-0071 (`rsa`, no fixed release): it is in `Cargo.lock` only
+  through `sqlx-mysql`, which is not built. `cargo audit` passes.
+- Checked against a `db_v2.sqlite3` written by the published 1.3.0 image:
+  existing peers are read (same uuid registers, another gets
+  `UUID_MISMATCH`), new ones are written, and `release-id` deletes. That
+  database is kept as `tests/fixtures/peers-1.3.0.sqlite3` for a unit test
+  in `src/database.rs`.
+
+### hbbs: idle cache entries are pruned (2026-11-04)
+
+Issue #10. Based on a change proposed upstream by @jahvari, rustdesk-server
+PR 727.
+
+- Every minute `hbbs` drops from memory the peers that have been idle for 10
+  minutes: no WebSocket or TCP registration, no UDP registration and no
+  `RegisterPk` in that time, and not held by a request in progress. The
+  database keeps them, and they are loaded again when asked for. Before,
+  every ID ever seen stayed in memory until restart.
+- Peers with a live WebSocket or TCP registration are never dropped, however
+  long since they last used UDP. The access policy's address match is not
+  affected: it keeps its own record of who registered from where, for 30
+  seconds.
+- Entries for the per-IP registration limits are dropped once both their
+  windows (60 seconds, 24 hours) have passed, and the `ip-changes` log once
+  its 6 minutes have. Before, both only shrank when an operator ran
+  `ip-blocker` or `ip-changes` on the admin console.
+- At most 1,000,000 IPs are tracked for the per-IP limits. Past that, after
+  dropping expired entries, a new IP registers without being tracked, and a
+  warning is logged once a minute. Upstream's PR refuses it instead, which
+  would let a flood of spoofed UDP sources keep every new IP out for a day.
+- At most 128 addresses are kept per ID in the `ip-changes` log.
+- Not taken from that PR: caps on the peer cache. Pruning bounds it by the
+  devices in use, and a cap would refuse devices on a large server.
+- Unit tests in `src/peer.rs`.
+
+### hbbs: `release-id` admin command (2026-11-04)
+
+Issue #19. Requested upstream by @shahidullahr, rustdesk-server issue 483.
+
+- `release-id <id>` / `rid <id>` on the loopback admin console deletes the
+  device from the database and from memory and closes its WebSocket or TCP
+  registration, so another machine can register the ID. Before, a reinstalled
+  machine could not take back its custom ID: the old entry kept it, and the
+  only fix was editing `db_v2.sqlite3` with `hbbs` stopped.
+- It waits for any registration of that ID in progress, under the same per-ID
+  lock.
+- One line back: `OK <id>`, `OK <id> online` (it was online and may register
+  again at once if that machine still runs), `NOT_FOUND <id>` or
+  `ERROR <reason>`. For the CortenDesk console's "Release ID" button.
+- README (Configuration) and `docs/environment-variables.md` (Runtime console).
+- Test in `tests/admin_console.rs`: a live registration released and taken by
+  another machine, then a database-only one after a restart.
+
+### hbbs: one failed UDP reply no longer rebuilds the UDP socket (2026-11-04)
+
+Issue #9. Based on a fix proposed upstream by @jahvari, rustdesk-server
+PR 738, done in this tree because that PR changes `hbb_common`.
+
+- A UDP reply that fails is logged at debug level and dropped. Before, it
+  rebuilt the UDP socket, and every client's packets were lost meanwhile.
+  Under load (`ENOBUFS`) or with odd source addresses this could repeat.
+- Replies are written to the socket directly. `hbb_common`'s
+  `FramedSocket::send` goes through tokio-util's `UdpFramed`, which keeps a
+  datagram whose send failed and sends it again before every later one, so
+  after one failure every reply failed until the socket was rebuilt. That is
+  why the rebuild was there.
+- Datagrams from port 0 or from a broadcast, multicast or unspecified address
+  are ignored: there is nothing to answer.
+- A failed receive still rebuilds the socket, as before.
+- Unit tests in `src/rendezvous_server.rs`.
+
+### README: reverse proxy advice for the WebSocket ports (2026-11-04)
+
+- "Running it" told operators to put the WebSocket ports behind a proxy that
+  sets `X-Real-IP`. Since 1.3.0 that header is never read; the client address
+  comes from `X-Forwarded-For`, and only from a proxy listed in
+  `TRUSTED_PROXIES`. The paragraph now says so.
+
+### Release source tarball with submodules (2026-11-04)
+
+Issue #16. Reported upstream by @SecurityCze, rustdesk-server issue 701.
+
+- `.github/workflows/release.yml` has a new `source` job that, for a published
+  release, attaches `cortendesk-server-<tag>-src.tar.gz`: the tagged tree and
+  the `libs/hbb_common` submodule, under one top directory. GitHub's own
+  "Source code" archives leave the submodule out and cannot be built. The
+  other jobs are unchanged.
+- README: the tarball, under Running it.
+
+### Build script without hbb_common (2026-11-04)
+
+Issue #15. Based on a change proposed upstream by @luminoso, rustdesk-server
+PR 707.
+
+- `build.rs` writes `src/version.rs` from `CARGO_PKG_VERSION` itself, and only
+  when it changed. Before, it called `hbb_common::gen_version`, which made
+  `hbb_common`, and with it vendored OpenSSL, a build dependency: compiled a
+  second time for the build host, which slowed builds and complicated
+  cross-compiling.
+- `src/version.rs` no longer has `BUILD_DATE`, which nothing used.
+- `hbb_common` and `openssl` are no longer build dependencies.
+
+### Unused dependencies removed (2026-11-04)
+
+Issue #13. Based on a change proposed upstream by @jahvari, rustdesk-server
+PR 729.
+
+- Removed, as nothing in `src/` or `tests/` uses them: `bcrypt`,
+  `jsonwebtoken`, `tower-http`, `headers`, `http`, `regex`, `flate2`,
+  `whoami`, `machine-uid`, `mac_address`, `ping`, and `minreq`, which only the
+  removed update check used. `Cargo.lock` loses those and what only they
+  pulled in; nothing else changed version.
+- `axum` moved to a test-only dependency: only the stand-in console in
+  `tests/access_policy.rs` uses it.
+- `ring` 0.16 stays: `sqlx` 0.6 pulls it in through `rustls` 0.20.
+
+### hbbs: per-IP registration limits are settings (2026-11-04)
+
+Issue #12. Based on a change proposed upstream by @devhem, rustdesk-server
+PR 742, with the same setting names.
+
+- `MAX_NEW_IDS_PER_IP` / `--max-new-ids-per-ip` (default 300): distinct IDs
+  one client IP may register in 24 hours. `MAX_REGISTER_BURST_PER_IP` /
+  `--max-register-burst-per-ip` (default 30): registrations from one IP
+  without a 60-second pause. Both were fixed in the code. A company or MSP
+  with many machines behind one NAT hit the first, and new machines showed
+  "ID does not exist". Read from the environment, `.env`, `--config` or the
+  flag; a value that is not a positive whole number is logged and the
+  default used. Both are logged at start.
+- The limits now count exactly. Before, the first registration from an IP
+  was not counted towards either, and each check let one more through, so
+  32 registrations in a row and 302 IDs were allowed.
+- They cover every registration path: `RegisterPk` over UDP, TCP and
+  WebSocket.
+- README (Configuration) and `docs/environment-variables.md`.
+- Test in `tests/stream_registration.rs`, one limit set by flag and one by
+  environment.
+
+### hbbs: the UDP self-test survives failed sends (2026-11-04)
+
+Issue #11. Reported upstream by @littletow, rustdesk-server issue 444.
+
+- A failed send in the self-test (`TEST_HBBS`), for example `EPERM` from a
+  firewall, is logged once and retried every second. Before, one failed send
+  ended the process with `exit(1)`, so `hbbs` stopped after running for a
+  while and stayed down unless something restarted it.
+- A self-test that cannot start, on IPv6 and then IPv4, is logged and dropped;
+  `hbbs` keeps running. Before, that also exited.
+- Kept from upstream: once `hbbs` has answered the self-test, 12 seconds of
+  sent requests without an answer still exit the process so a supervisor
+  restarts it. Failed sends do not count towards those 12 seconds.
+- Unit test in `src/rendezvous_server.rs`.
+
+### Admin console replies arrive whole (2026-11-04)
+
+Issue #8. Based on a fix proposed upstream by @jahvari, rustdesk-server PR 717.
+
+- The loopback admin consoles of `hbbs` and `hbbr` write the whole reply.
+  Before, they wrote once and closed, so a reply larger than the socket could
+  take at once, such as a long block list, arrived cut short.
+- Test in `tests/admin_console.rs`: a 3 MB block list from `hbbr`, read
+  slowly.
+
+### Message size limits before sign-in and pairing (2026-11-04)
+
+Issue #7. Based on the message size limits proposed upstream by @jahvari,
+rustdesk-server PR 726. That PR's cap on connections is not taken: every
+device registered over WebSocket or TCP holds a connection.
+
+- `hbbs`: signalling messages are at most 1 MiB, on TCP (frame length, checked
+  on the frame header) and on WebSocket (`max_message_size` and
+  `max_frame_size`). A larger one closes the connection. Before, a TCP frame
+  could announce up to 1 GiB and a WebSocket message 64 MiB.
+- `hbbr`: before a connection is paired it may send at most 64 KB: on TCP a
+  frame longer than that, on WebSocket more than that many bytes in all,
+  handshake included, closes it. Once paired, the limits are what they were.
+  tungstenite cannot change a WebSocket's message limits once it is open, so
+  on WebSocket the limit is on bytes read from the socket.
+- Tests: in `tests/stream_registration.rs`, an online request of 40000 IDs
+  still answered and oversized TCP and WebSocket frames refused; in
+  `tests/relay_websocket.rs`, oversized frames before pairing refused and
+  2 MB messages carried after it, WebSocket to WebSocket and TCP to
+  WebSocket.
+
+### Key files: unreadable private key stops the server, stale `.pub` rewritten (2026-11-04)
+
+Issue #6. Reported upstream by @layer6org, rustdesk-server issue 678. Ported
+from upstream rustdesk-server commit 873230e, which came after this fork's base.
+
+- An `id_ed25519` that exists but cannot be opened or read, or does not hold a
+  valid key, stops `hbbs` (and `hbbr` with `-k -` or `-k _`) with an error.
+  Before, an unreadable one was treated as missing: a new random
+  `id_ed25519.pub` was written, the private key could not be, and clients
+  configured with the new `.pub` got "Key mismatch". A malformed key already
+  stopped the server; it now does so with an error instead of `exit(1)`.
+- A new private key is created with mode `0600`, never over an existing file.
+  An existing one with group or other permission bits is set to `0600`;
+  `0400` is kept.
+- A missing `id_ed25519.pub` is written from the private key, mode `0644`,
+  through a temporary file so it is never seen half written. One that does
+  not match the private key is logged as a warning and rewritten from it: the
+  server signs with the private key either way, and refusing to start would
+  turn a stale `.pub` into a restart loop on upgrade. Upstream refuses here.
+  Before, a stale `.pub` was left as it was, without a word.
+- Symlinked key paths are followed, at most 40 links.
+- `tempfile` moved from a test-only dependency to a dependency; `libc` added
+  for tests.
+- `docs/environment-variables.md`: the key file rules, under Keys and
+  encryption.
+- Tests in `src/common.rs`, from upstream, changed for the stale `.pub`, plus
+  unreadable and invalid private keys leaving both files untouched.
+
+### hbbs: punch request log capped, peer IDs at most 253 bytes (2026-11-04)
+
+Issue #5. Ported from upstream rustdesk-server commit 5e37f45, which came after
+this fork's base.
+
+- The log behind the `punch-requests` admin command keeps at most
+  `MAX_PUNCH_REQUESTS` entries (default 100000; `0` keeps none) and drops the
+  oldest. Before, every punch request that was not a recent duplicate was
+  added and nothing was ever removed.
+- Peer IDs over 253 bytes are refused: `RegisterPk` over UDP, TCP and
+  WebSocket answers `UUID_MISMATCH`, as it does for IDs under 6, before the
+  per-ID registration lock is taken; UDP `RegisterPeer` gets no reply; a punch
+  hole request answers `ID_NOT_EXIST`. Before, IDs had only a minimum length.
+- `docs/environment-variables.md`: `MAX_PUNCH_REQUESTS`.
+- Tests: a unit test for the cap in `src/rendezvous_server.rs`; in
+  `tests/stream_registration.rs`, a 254-byte ID refused on each path and a
+  253-byte one accepted.
+
+### hbbs: `always-use-relay` leaves the relay list alone (2026-11-04)
+
+Issue #4. Based on a fix proposed upstream by @jahvari, rustdesk-server PR 716.
+
+- The admin console command `always-use-relay` / `aur` only sets the flag.
+  Before, it also passed its argument to the relay server list, so `aur Y`
+  replaced the list with "Y", which is not a valid server and left the list
+  empty. Its help line now shows the argument: `always-use-relay(aur) [Y|N]`.
+- New test `tests/admin_console.rs`.
+
+### hbbr: legs that arrive together are paired (2026-11-04)
+
+Issue #3. Reported upstream with a repro by @wb113, rustdesk-server issue 708;
+based on a fix proposed upstream by @jahvari, rustdesk-server PR 721.
+
+- The second leg of a session is looked up and the first is stored under one
+  lock. Before, when both arrived at the same moment, each could miss the
+  other, the second replaced the first, and the session failed.
+- A waiting leg that expires after 30 seconds removes only itself. Before, it
+  removed whatever waited under its uuid, which could be a newer leg.
+- Tests: in `tests/relay_websocket.rs`, 64 sessions whose two legs arrive
+  together; a unit test for the expiry in `src/relay_server.rs`.
+
+### hbbr: relay writes time out (2026-11-04)
+
+Issue #2. Based on a fix proposed upstream by @jahvari, rustdesk-server PR 723.
+
+- A write to either side of a relayed session that takes over 30 seconds ends
+  the session. Before, when one side stopped reading (a frozen app, or a dead
+  network that never sends a reset), the write waited forever, the 30-second
+  idle check never ran, and the session and its relay report never closed.
+- Unit test in `src/relay_server.rs`.
+
 ## 1.3.0 (2026-11-03)
 
 ### Connection paths for the console's connection log (2026-11-03)

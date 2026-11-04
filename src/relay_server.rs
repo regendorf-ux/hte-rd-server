@@ -1,7 +1,10 @@
 // Modified by the CortenDesk Server project on 2026-11-03: client address from
-// trusted proxies and a WebSocket handshake timeout; relay session reports. See
-// CHANGES.md. This file is part of a modified version of rustdesk-server,
-// distributed under the AGPL-3.0 like the original.
+// trusted proxies and a WebSocket handshake timeout; relay session reports.
+// Modified on 2026-11-04: a timeout on relay writes; pairing under one lock;
+// key file errors stop the server; a size limit before pairing; whole admin
+// console replies. See CHANGES.md.
+// This file is part of a modified version of rustdesk-server, distributed under
+// the AGPL-3.0 like the original.
 
 use async_speed_limit::Limiter;
 use async_trait::async_trait;
@@ -29,16 +32,21 @@ use std::{
     collections::{HashMap, HashSet},
     io::prelude::*,
     io::Error,
+    pin::Pin,
+    task::{Context, Poll},
     net::{IpAddr, SocketAddr},
     sync::atomic::{AtomicUsize, Ordering},
+    sync::Arc,
 };
 
 type Usage = (usize, usize, usize, usize);
 
 /// The first side of a pair, held until the other arrives. Its request is
 /// kept too: only the controller's names the device and the connection type,
-/// and either side may come first (issue #130).
+/// and either side may come first (issue #130). `token` tells this waiter
+/// from a later one with the same uuid, so its expiry removes only itself.
 struct Waiting {
+    token: Arc<()>,
     stream: Box<dyn StreamTrait>,
     id: String,
     conn_type: i32,
@@ -58,6 +66,14 @@ static LIMIT_SPEED: AtomicUsize = AtomicUsize::new(32 * 1024 * 1024); // in bit/
 static TOTAL_BANDWIDTH: AtomicUsize = AtomicUsize::new(1024 * 1024 * 1024); // in bit/s
 static SINGLE_BANDWIDTH: AtomicUsize = AtomicUsize::new(128 * 1024 * 1024); // in bit/s
 const BLACKLIST_FILE: &str = "blacklist.txt";
+/// A write to one side that takes longer than this ends the session: that side
+/// has stopped reading, and waiting would keep the pair open forever.
+const RELAY_WRITE_TIMEOUT_MS: u64 = if cfg!(test) { 300 } else { 30_000 };
+/// Most a connection may send before it is paired: its relay request, and on
+/// WebSocket the HTTP handshake too. A paired connection has no such limit.
+/// Before, a TCP frame could announce up to 1 GiB and a WebSocket message
+/// 64 MiB from a client that had not shown it knew a session.
+const MAX_BEFORE_PAIRING: usize = 64 * 1024;
 const BLOCKLIST_FILE: &str = "blocklist.txt";
 
 #[tokio::main(flavor = "multi_thread")]
@@ -66,7 +82,7 @@ pub async fn start_with_bind(
     port: &str,
     key: &str,
 ) -> ResultType<()> {
-    let key = get_server_sk(key);
+    let key = get_server_sk(key)?;
     crate::hte_relay_gate::start_listener(); // HTE
     if let Ok(mut file) = std::fs::File::open(BLACKLIST_FILE) {
         let mut contents = String::new();
@@ -416,7 +432,7 @@ async fn handle_connection(
             if let Ok(Ok(n)) = timeout(1000, stream.read(&mut buffer[..])).await {
                 if let Ok(data) = std::str::from_utf8(&buffer[..n]) {
                     let res = check_cmd(data, limiter).await;
-                    stream.write(res.as_bytes()).await.ok();
+                    stream.write_all(res.as_bytes()).await.ok();
                 }
             }
         });
@@ -449,6 +465,7 @@ async fn make_pair(
             addr.set_ip(crate::common::client_ip(addr.ip(), req.headers()));
             Ok(response)
         };
+        let stream = ReadBudget::new(stream);
         let ws_stream = timeout(5_000, tokio_tungstenite::accept_hdr_async(stream, callback)).await??;
         if BLOCKLIST.read().await.get(&addr.ip().to_string()).is_some() {
             log::info!("{} blocked", addr.ip());
@@ -456,7 +473,9 @@ async fn make_pair(
         }
         make_pair_(ws_stream, addr, key, limiter).await;
     } else {
-        make_pair_(FramedStream::from(stream, addr), addr, key, limiter).await;
+        let mut stream = FramedStream::from(stream, addr);
+        stream.codec_mut().set_max_packet_length(MAX_BEFORE_PAIRING);
+        make_pair_(stream, addr, key, limiter).await;
     }
     Ok(())
 }
@@ -471,8 +490,11 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                     return;
                 }
                 if !rf.uuid.is_empty() {
-                    let mut waiting = PEERS.lock().await.remove(&rf.uuid);
-                    if let Some(waiting) = waiting.as_mut() {
+                    // Look up and insert under one lock: two legs arriving
+                    // together must find each other.
+                    let mut peers = PEERS.lock().await;
+                    if let Some(mut waiting) = peers.remove(&rf.uuid) {
+                        drop(peers);
                         if !crate::hte_relay_gate::admitted(&rf.uuid).await { log::warn!("Relay gate: refused {} from {}: not admitted by hbbs", rf.uuid, addr); return; } // HTE
                         log::info!("Relayrequest {} from {} got paired", rf.uuid, addr);
                         let report = crate::relay_report::opened(
@@ -481,6 +503,8 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                             (&waiting.id, waiting.conn_type, waiting.addr),
                         );
                         let peer = &mut waiting.stream;
+                        stream.paired();
+                        peer.paired();
                         let id = format!("{}:{}", addr.ip(), addr.port());
                         USAGE.write().await.insert(id.clone(), Default::default());
                         if !stream.is_ws() && !peer.is_ws() {
@@ -502,21 +526,34 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                         }
                     } else {
                         log::info!("New relay request {} from {}", rf.uuid, addr);
-                        PEERS.lock().await.insert(
+                        let token = Arc::new(());
+                        peers.insert(
                             rf.uuid.clone(),
                             Waiting {
+                                token: token.clone(),
                                 stream: Box::new(stream),
                                 id: rf.id.clone(),
                                 conn_type: rf.conn_type.value(),
                                 addr,
                             },
                         );
+                        drop(peers);
                         sleep(30.).await;
-                        PEERS.lock().await.remove(&rf.uuid);
+                        expire_waiting(&mut *PEERS.lock().await, &rf.uuid, &token);
                     }
                 }
             }
         }
+    }
+}
+
+/// Remove the waiter for `uuid` only if it is still the one holding `token`.
+fn expire_waiting(peers: &mut HashMap<String, Waiting>, uuid: &str, token: &Arc<()>) {
+    if peers
+        .get(uuid)
+        .map_or(false, |waiting| Arc::ptr_eq(&waiting.token, token))
+    {
+        peers.remove(uuid);
     }
 }
 
@@ -559,7 +596,7 @@ async fn relay(
                     total_s += nb;
                     *carried += bytes.len();
                     if !bytes.is_empty() {
-                        stream.send_raw(bytes.into()).await?;
+                        send_timed(stream, bytes.into()).await?;
                     }
                 } else {
                     break;
@@ -579,7 +616,7 @@ async fn relay(
                     total_s += nb;
                     *carried += bytes.len();
                     if !bytes.is_empty() {
-                        peer.send_raw(bytes.into()).await?;
+                        send_timed(&mut **peer, bytes.into()).await?;
                     }
                 } else {
                     break;
@@ -627,7 +664,14 @@ async fn relay(
     Ok(())
 }
 
-fn get_server_sk(key: &str) -> String {
+async fn send_timed<S: StreamTrait + ?Sized>(stream: &mut S, bytes: Bytes) -> ResultType<()> {
+    match timeout(RELAY_WRITE_TIMEOUT_MS, stream.send_raw(bytes)).await {
+        Ok(res) => res,
+        Err(_) => bail!("write timed out"),
+    }
+}
+
+fn get_server_sk(key: &str) -> ResultType<String> {
     let mut key = key.to_owned();
     if let Ok(sk) = base64::decode(&key) {
         if sk.len() == sign::SECRETKEYBYTES {
@@ -637,7 +681,7 @@ fn get_server_sk(key: &str) -> String {
     }
 
     if key == "-" || key == "_" {
-        let (pk, _) = crate::common::gen_sk(300);
+        let (pk, _) = crate::common::gen_sk(300)?;
         key = pk;
     }
 
@@ -645,7 +689,7 @@ fn get_server_sk(key: &str) -> String {
         log::info!("Key: {}", key);
     }
 
-    key
+    Ok(key)
 }
 
 #[async_trait]
@@ -654,6 +698,8 @@ trait StreamTrait: Send + Sync + 'static {
     async fn send_raw(&mut self, bytes: Bytes) -> ResultType<()>;
     fn is_ws(&self) -> bool;
     fn set_raw(&mut self);
+    /// Lift the size limit that applies before pairing.
+    fn paired(&mut self);
 }
 
 #[async_trait]
@@ -673,10 +719,76 @@ impl StreamTrait for FramedStream {
     fn set_raw(&mut self) {
         self.set_raw();
     }
+
+    fn paired(&mut self) {
+        self.codec_mut().set_max_packet_length(usize::MAX);
+    }
+}
+
+/// The socket under a WebSocket relay connection. tungstenite's message limits
+/// cannot change once the connection is open, so the limit before pairing is
+/// on the bytes read from the socket instead: `MAX_BEFORE_PAIRING` in all,
+/// handshake included, then none.
+struct ReadBudget {
+    inner: TcpStream,
+    left: Option<usize>,
+}
+
+impl ReadBudget {
+    fn new(inner: TcpStream) -> Self {
+        Self {
+            inner,
+            left: Some(MAX_BEFORE_PAIRING),
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for ReadBudget {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let Some(left) = this.left else {
+            return Pin::new(&mut this.inner).poll_read(cx, buf);
+        };
+        if left == 0 {
+            return Poll::Ready(Err(Error::new(
+                std::io::ErrorKind::InvalidData,
+                "too much data before pairing",
+            )));
+        }
+        let max = left.min(buf.remaining());
+        let mut part = tokio::io::ReadBuf::new(buf.initialize_unfilled_to(max));
+        let res = Pin::new(&mut this.inner).poll_read(cx, &mut part);
+        let n = part.filled().len();
+        buf.advance(n);
+        this.left = Some(left - n);
+        res
+    }
+}
+
+impl tokio::io::AsyncWrite for ReadBudget {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
 }
 
 #[async_trait]
-impl StreamTrait for tokio_tungstenite::WebSocketStream<TcpStream> {
+impl StreamTrait for tokio_tungstenite::WebSocketStream<ReadBudget> {
     async fn recv(&mut self) -> Option<Result<BytesMut, Error>> {
         if let Some(msg) = self.next().await {
             match msg {
@@ -706,4 +818,100 @@ impl StreamTrait for tokio_tungstenite::WebSocketStream<TcpStream> {
     }
 
     fn set_raw(&mut self) {}
+
+    fn paired(&mut self) {
+        self.get_mut().left = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Yields `data` once, then nothing; writes hang when `stalled`.
+    struct TestStream {
+        data: Option<BytesMut>,
+        stalled: bool,
+    }
+
+    #[async_trait]
+    impl StreamTrait for TestStream {
+        async fn recv(&mut self) -> Option<Result<BytesMut, Error>> {
+            match self.data.take() {
+                Some(data) => Some(Ok(data)),
+                None => std::future::pending().await,
+            }
+        }
+        async fn send_raw(&mut self, _: Bytes) -> ResultType<()> {
+            if self.stalled {
+                std::future::pending().await
+            } else {
+                Ok(())
+            }
+        }
+        fn is_ws(&self) -> bool {
+            false
+        }
+        fn set_raw(&mut self) {}
+        fn paired(&mut self) {}
+    }
+
+    async fn stalled_write_ends_relay(towards_peer: bool) {
+        let x = || Some(BytesMut::from(&b"x"[..]));
+        let mut stream = TestStream {
+            data: if towards_peer { x() } else { None },
+            stalled: !towards_peer,
+        };
+        let mut peer: Box<dyn StreamTrait> = Box::new(TestStream {
+            data: if towards_peer { None } else { x() },
+            stalled: towards_peer,
+        });
+        let mut carried = 0;
+        let res = timeout(
+            5_000,
+            relay(
+                "192.0.2.1:1".parse().unwrap(),
+                &mut stream,
+                &mut peer,
+                Limiter::new(f64::INFINITY),
+                "stalled-write-test".to_owned(),
+                &mut carried,
+            ),
+        )
+        .await
+        .expect("a stalled write must end the relay");
+        let err = res.expect_err("the relay must fail");
+        assert!(err.to_string().contains("write timed out"), "{err}");
+        assert_eq!(carried, 1);
+    }
+
+    fn waiting(token: &Arc<()>) -> Waiting {
+        Waiting {
+            token: token.clone(),
+            stream: Box::new(TestStream {
+                data: None,
+                stalled: false,
+            }),
+            id: String::new(),
+            conn_type: 0,
+            addr: "192.0.2.1:1".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn expiry_leaves_a_newer_waiter_alone() {
+        let (old, newer) = (Arc::new(()), Arc::new(()));
+        let mut peers = HashMap::new();
+        peers.insert("uuid".to_owned(), waiting(&newer));
+        expire_waiting(&mut peers, "uuid", &old);
+        assert!(peers.contains_key("uuid"));
+        expire_waiting(&mut peers, "uuid", &newer);
+        assert!(!peers.contains_key("uuid"));
+    }
+
+    #[hbb_common::tokio::test]
+    async fn stalled_writes_end_the_relay_both_ways() {
+        stalled_write_ends_relay(true).await;
+        stalled_write_ends_relay(false).await;
+    }
 }

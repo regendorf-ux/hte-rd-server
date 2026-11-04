@@ -8,13 +8,22 @@
 // answers and ICE candidates, `crate::webrtc_signal`). Modified on 2026-11-03:
 // connection path tags (`conn_audit_ref`); persistent TCP and WebSocket
 // registration for desktop clients and the client address from trusted
-// proxies, based on PR #1 by vk2amv. See CHANGES.md.
+// proxies, based on PR #1 by vk2amv. Modified on 2026-11-04:
+// `always-use-relay` leaves the relay list alone; the punch request log is
+// capped and peer IDs are at most 253 bytes; a key file error stops `hbbs`;
+// signalling messages are at most 1 MiB; whole admin console replies; the UDP
+// self-test survives failed sends; configurable per-IP registration limits; a
+// failed UDP reply no longer rebuilds the UDP socket; the `release-id` admin
+// command; idle cache entries are pruned; key exchange version 1; device
+// uuids are not logged; UDP hole punching and IPv6 peer-to-peer
+// (`crate::punch`). See CHANGES.md.
 // This file is part of a modified version of rustdesk-server, distributed under
 // the AGPL-3.0 like the original.
 
 use crate::common::*;
 use crate::peer::*;
 use crate::policy;
+use crate::punch::{self, Punches};
 use crate::webrtc_signal::{self, Routes};
 use crate::stream_connection::{
     Connection, Registration, HEARTBEAT_INTERVAL, HEARTBEAT_SECONDS, RECEIVE_TIMEOUT, WRITE_TIMEOUT,
@@ -35,7 +44,7 @@ use hbb_common::{
         register_pk_response::Result::{TOO_FREQUENT, UUID_MISMATCH},
         *,
     },
-    tcp::{Encrypt, FramedStream},
+    tcp::{Encrypt, FramedStream, KxTranscript, KX_PARAMS_DOMAIN, KX_VERSION_LATEST},
     timeout,
     tokio::{
         self,
@@ -50,9 +59,9 @@ use hbb_common::{
     AddrMangle, ResultType,
 };
 use ipnetwork::Ipv4Network;
-use sodiumoxide::crypto::{box_, secretbox, sign};
+use sodiumoxide::crypto::{box_, sign};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     sync::Arc,
@@ -68,6 +77,23 @@ enum Data {
 
 /// Versioned so the console can tell our tags from anything else in the field.
 const AUDIT_REF_PREFIX: &str = "cd1/";
+/// Largest signalling message accepted, on TCP and WebSocket. The largest real
+/// ones, online requests for big address books, are a few hundred KB at most.
+/// Before, a TCP frame could announce up to 1 GiB and a WebSocket message
+/// 64 MiB, all buffered before anything was checked.
+const MAX_SIGNAL_MESSAGE: usize = 1024 * 1024;
+
+fn signal_codec() -> BytesCodec {
+    let mut codec = BytesCodec::new();
+    codec.set_max_packet_length(MAX_SIGNAL_MESSAGE);
+    codec
+}
+
+fn signal_ws_config() -> tungstenite::protocol::WebSocketConfig {
+    tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_SIGNAL_MESSAGE))
+        .max_frame_size(Some(MAX_SIGNAL_MESSAGE))
+}
 type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
 type WsSink = SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, tungstenite::Message>;
 
@@ -185,8 +211,69 @@ use once_cell::sync::Lazy;
 use tokio::sync::Mutex as TokioMutex; // differentiate if needed
 #[derive(Clone)]
 struct PunchReqEntry { tm: Instant, from_ip: String, to_ip: String, to_id: String }
-static PUNCH_REQS: Lazy<TokioMutex<Vec<PunchReqEntry>>> = Lazy::new(|| TokioMutex::new(Vec::new()));
+static PUNCH_REQS: Lazy<TokioMutex<VecDeque<PunchReqEntry>>> = Lazy::new(|| TokioMutex::new(VecDeque::new()));
 const PUNCH_REQ_DEDUPE_SEC: u64 = 60;
+/// Records kept for the `punch-requests` command, oldest dropped first.
+/// `MAX_PUNCH_REQUESTS`, default 100000; 0 keeps none.
+static PUNCH_REQ_MAX: Lazy<usize> =
+    Lazy::new(|| get_arg("MAX_PUNCH_REQUESTS").parse().unwrap_or(100_000));
+
+/// `UDP_PUNCH` and `IPV6_PUNCH`: UDP hole punching and IPv6 peer-to-peer for
+/// RustDesk 1.5 (issue #18). On unless set to `N`, `no`, `0`, `false` or `off`.
+static UDP_PUNCH: Lazy<bool> = Lazy::new(|| switch_on("UDP_PUNCH"));
+static IPV6_PUNCH: Lazy<bool> = Lazy::new(|| switch_on("IPV6_PUNCH"));
+
+fn switch_on(name: &str) -> bool {
+    !matches!(
+        get_arg(name).trim().to_lowercase().as_str(),
+        "n" | "no" | "0" | "false" | "off"
+    )
+}
+
+/// Per-IP registration limits: `RegisterPk` requests in a row without a pause of
+/// `IP_BLOCK_DUR` seconds, and distinct IDs within `DAY_SECONDS`. Many machines
+/// behind one NAT may need more.
+static MAX_REGISTER_BURST_PER_IP: Lazy<u32> =
+    Lazy::new(|| positive_arg("MAX_REGISTER_BURST_PER_IP", 30));
+static MAX_NEW_IDS_PER_IP: Lazy<usize> = Lazy::new(|| positive_arg("MAX_NEW_IDS_PER_IP", 300));
+
+fn positive_arg<T: std::str::FromStr + PartialOrd + Default + std::fmt::Display>(
+    name: &str,
+    default: T,
+) -> T {
+    let value = get_arg(name);
+    if value.is_empty() {
+        return default;
+    }
+    match value.trim().parse::<T>() {
+        Ok(n) if n > T::default() => n,
+        _ => {
+            log::warn!("Invalid {name} {value:?}, using {default}");
+            default
+        }
+    }
+}
+
+async fn record_punch_req(from_ip: String, to_ip: String, to_id: String) {
+    let max = *PUNCH_REQ_MAX;
+    if max == 0 {
+        return;
+    }
+    let mut lock = PUNCH_REQS.lock().await;
+    let mut dup = false;
+    for e in lock.iter().rev().take(30) { // only check recent tail subset for speed
+        if e.from_ip == from_ip && e.to_id == to_id {
+            if e.tm.elapsed().as_secs() < PUNCH_REQ_DEDUPE_SEC { dup = true; }
+            break;
+        }
+    }
+    if !dup {
+        while lock.len() >= max {
+            lock.pop_front();
+        }
+        lock.push_back(PunchReqEntry { tm: Instant::now(), from_ip, to_ip, to_id });
+    }
+}
 
 #[derive(Clone)]
 struct Inner {
@@ -203,6 +290,8 @@ pub struct RendezvousServer {
     tcp_punch: Arc<Mutex<HashMap<SocketAddr, Connection>>>,
     /// Controller connections in a WebRTC exchange; see `crate::webrtc_signal`.
     webrtc: Arc<Mutex<Routes<Connection>>>,
+    /// Controller connections granted UDP punching or IPv6; see `crate::punch`.
+    punches: Arc<std::sync::Mutex<Punches>>,
     registration_locks: RegistrationLocks,
     pm: PeerMap,
     tx: Sender,
@@ -210,6 +299,65 @@ pub struct RendezvousServer {
     relay_servers0: Arc<RelayServers>,
     rendezvous_servers: Arc<Vec<String>>,
     inner: Arc<Inner>,
+}
+
+/// Our half of a signalling key exchange, kept until the client answers.
+///
+/// Version 1 (RustDesk 1.5): beside the signed key, the server signs
+/// `KxParams` (that key and the newest version it speaks) and sets bit 255 of
+/// the key. X25519 ignores that bit, so older clients use the key as before
+/// and answer version 0; a 1.5 client sees it and then requires the signed
+/// parameters, so the version cannot be stripped on the way.
+struct KxOffer {
+    sk: box_::SecretKey,
+    /// Our public key as signed, marker bit included: part of the transcript.
+    pk: [u8; box_::PUBLICKEYBYTES],
+}
+
+impl KxOffer {
+    fn new(server_sk: &sign::SecretKey) -> (KeyExchange, Self) {
+        let (pk, sk) = box_::gen_keypair();
+        let mut pk = pk.0;
+        pk[box_::PUBLICKEYBYTES - 1] |= 0x80;
+        let params = KxParams {
+            pk: pk.to_vec().into(),
+            version: KX_VERSION_LATEST,
+            ..Default::default()
+        };
+        let mut signed = KX_PARAMS_DOMAIN.to_vec();
+        signed.extend_from_slice(&params.write_to_bytes().unwrap_or_default());
+        let ex = KeyExchange {
+            keys: vec![sign::sign(&pk, server_sk).into()],
+            version: KX_VERSION_LATEST,
+            signed_params: sign::sign(&signed, server_sk).into(),
+            ..Default::default()
+        };
+        (ex, Self { sk, pk })
+    }
+
+    /// The cipher for the client's answer: theirs is the initiator side.
+    fn accept(&self, reply: &KeyExchange) -> ResultType<Encrypt> {
+        if reply.keys.len() != 2 {
+            bail!("Handshake failed: expected 2 keys, got {}", reply.keys.len());
+        }
+        if reply.version > KX_VERSION_LATEST {
+            bail!("Handshake failed: unsupported key exchange version {}", reply.version);
+        }
+        let key = Encrypt::decode(&reply.keys[1], &reply.keys[0], &self.sk)?;
+        if reply.version == 0 {
+            return Ok(Encrypt::new(key));
+        }
+        Encrypt::new_split(
+            key,
+            false,
+            &KxTranscript {
+                initiator_pk: &reply.keys[0],
+                responder_pk: &self.pk,
+                advertised: KX_VERSION_LATEST,
+                picked: reply.version,
+            },
+        )
+    }
 }
 
 enum LoopFailure {
@@ -234,7 +382,7 @@ impl RendezvousServer {
         rmem: usize,
     ) -> ResultType<()> {
         init_trusted_proxies()?;
-        let (key, sk) = Self::get_server_sk(key);
+        let (key, sk) = Self::get_server_sk(key)?;
         let nat_port = port - 1;
         let ws_port = port + 2;
         let pm = PeerMap::new().await?;
@@ -261,6 +409,7 @@ impl RendezvousServer {
         let mut rs = Self {
             tcp_punch: Arc::new(Mutex::new(HashMap::new())),
             webrtc: Default::default(),
+            punches: Default::default(),
             registration_locks: Default::default(),
             pm,
             tx: tx.clone(),
@@ -304,12 +453,24 @@ impl RendezvousServer {
                 "N"
             }
         );
+        log::info!(
+            "MAX_REGISTER_BURST_PER_IP={}, MAX_NEW_IDS_PER_IP={}",
+            *MAX_REGISTER_BURST_PER_IP,
+            *MAX_NEW_IDS_PER_IP
+        );
+        log::info!(
+            "UDP_PUNCH={}, IPV6_PUNCH={}",
+            if *UDP_PUNCH { "Y" } else { "N" },
+            if *IPV6_PUNCH { "Y" } else { "N" }
+        );
         if test_addr.to_lowercase() != "no" {
             let test_addr = if test_addr.is_empty() {
                 listener.local_addr()?
             } else {
                 test_addr.parse()?
             };
+            // A self-test that cannot start is logged and dropped; hbbs keeps
+            // running. Only its watchdog ends the process (see `test_hbbs`).
             tokio::spawn(async move {
                 if let Err(err) = test_hbbs(test_addr).await {
                     if test_addr.is_ipv6() && test_addr.ip().is_unspecified() {
@@ -317,11 +478,9 @@ impl RendezvousServer {
                         test_addr.set_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
                         if let Err(err) = test_hbbs(test_addr).await {
                             log::error!("Failed to run hbbs test with {test_addr}: {err}");
-                            std::process::exit(1);
                         }
                     } else {
                         log::error!("Failed to run hbbs test with {test_addr}: {err}");
-                        std::process::exit(1);
                     }
                 }
             });
@@ -382,8 +541,13 @@ impl RendezvousServer {
         key: &str,
     ) -> LoopFailure {
         let mut timer_check_relay = interval(Duration::from_millis(CHECK_RELAY_TIMEOUT));
+        let mut timer_prune = interval(Duration::from_secs(60));
         loop {
             tokio::select! {
+                _ = timer_prune.tick() => {
+                    let pm = self.pm.clone();
+                    tokio::spawn(async move { pm.prune().await });
+                }
                 _ = timer_check_relay.tick() => {
                     if self.relay_servers0.len() > 1 {
                         let rs = self.relay_servers0.clone();
@@ -395,7 +559,11 @@ impl RendezvousServer {
                 }
                 Some(data) = rx.recv() => {
                     match data {
-                        Data::Msg(msg, addr) => { allow_err!(socket.send(msg.as_ref(), addr).await); }
+                        Data::Msg(msg, addr) => {
+                            if let Err(err) = udp_send(socket, msg.as_ref(), addr).await {
+                                log::debug!("UDP send to {} failed: {}", addr, err);
+                            }
+                        }
                         Data::RelayServers0(rs) => { self.parse_relay_servers(&rs); }
                         Data::RelayServers(rs) => { self.relay_servers = Arc::new(rs); }
                     }
@@ -403,9 +571,14 @@ impl RendezvousServer {
                 res = socket.next() => {
                     match res {
                         Some(Ok((bytes, addr))) => {
-                            if let Err(err) = self.handle_udp(&bytes, addr.into(), socket, key).await {
-                                log::error!("udp failure: {}", err);
-                                return LoopFailure::UdpSocket;
+                            // One failed reply is that client's problem, not the
+                            // socket's: drop it and carry on (issue #9).
+                            let addr: SocketAddr = addr.into();
+                            if !is_unicast_source(addr) {
+                                continue;
+                            }
+                            if let Err(err) = self.handle_udp(&bytes, addr, socket, key).await {
+                                log::debug!("UDP reply to {} failed: {}", addr, err);
                             }
                         }
                         Some(Err(err)) => {
@@ -481,7 +654,7 @@ impl RendezvousServer {
             match msg_in.union {
                 Some(rendezvous_message::Union::RegisterPeer(rp)) => {
                     // B registered
-                    if !rp.id.is_empty() {
+                    if !rp.id.is_empty() && rp.id.len() <= MAX_PEER_ID_LEN {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
                         self.update_addr(rp.id, addr, socket).await?;
                         if self.inner.serial > rp.serial {
@@ -491,7 +664,7 @@ impl RendezvousServer {
                                 rendezvous_servers: (*self.rendezvous_servers).clone(),
                                 ..Default::default()
                             });
-                            socket.send(&msg_out, addr).await?;
+                            udp_send(socket, &msg_out, addr).await?;
                         }
                     }
                 }
@@ -507,7 +680,29 @@ impl RendezvousServer {
                     // The supported client path sends PunchHoleRequest over TCP/WS.
                 }
                 Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
-                    // UDP PunchHoleSent is intentionally unsupported to avoid UDP reflection/amplification
+                    // Only the device's answer to a UDP punch this server
+                    // asked for. It never causes a UDP packet: the answer
+                    // goes to the controller over its TCP connection.
+                    self.handle_udp_hole_sent(phs, addr).await;
+                }
+                Some(rendezvous_message::Union::TestNatRequest(_)) => {
+                    // The controller learns its public UDP port from this, as
+                    // from a STUN server. The one UDP reply to an address taken
+                    // from a packet: a few bytes, rate-limited (`crate::punch`).
+                    if *UDP_PUNCH
+                        && self
+                            .punches
+                            .lock()
+                            .unwrap()
+                            .nat_test_allowed(addr.ip(), Instant::now())
+                    {
+                        let mut msg_out = RendezvousMessage::new();
+                        msg_out.set_test_nat_response(TestNatResponse {
+                            port: addr.port() as _,
+                            ..Default::default()
+                        });
+                        udp_send(socket, &msg_out, addr).await?;
+                    }
                 }
                 Some(rendezvous_message::Union::LocalAddr(la)) => {
                     // UDP LocalAddr is intentionally unsupported to avoid UDP reflection/amplification
@@ -540,7 +735,7 @@ impl RendezvousServer {
                             url: self.inner.software_url.clone(),
                             ..Default::default()
                         });
-                        socket.send(&msg_out, addr).await?;
+                        udp_send(socket, &msg_out, addr).await?;
                     }
                 }
                 _ => {}
@@ -557,6 +752,9 @@ impl RendezvousServer {
     ) -> register_pk_response::Result {
         if rk.uuid.is_empty() || rk.pk.is_empty() {
             return register_pk_response::Result::INVALID_ID_FORMAT;
+        }
+        if rk.id.len() < 6 || rk.id.len() > MAX_PEER_ID_LEN {
+            return UUID_MISMATCH;
         }
         // One registration per ID at a time, so two cannot both claim an
         // empty identity. Other IDs are not held up. The UDP loop never waits:
@@ -589,9 +787,7 @@ impl RendezvousServer {
     ) -> register_pk_response::Result {
         let id = rk.id;
         let ip = addr.ip().to_string();
-        if id.len() < 6 {
-            return UUID_MISMATCH;
-        } else if !self.check_ip_blocker(&ip, &id).await {
+        if !self.check_ip_blocker(&ip, &id).await {
             return TOO_FREQUENT;
         }
         let peer = self.pm.get_or(&id).await;
@@ -614,12 +810,8 @@ impl RendezvousServer {
                         return UUID_MISMATCH;
                     }
                 } else {
-                    log::warn!(
-                        "Peer {} uuid mismatch: {:?} vs {:?}",
-                        id,
-                        rk.uuid,
-                        peer.uuid
-                    );
+                    // Not the uuids themselves: they identify the machines.
+                    log::warn!("Peer {} uuid mismatch: registered by another machine", id);
                     drop(peer);
                     return UUID_MISMATCH;
                 }
@@ -648,7 +840,7 @@ impl RendezvousServer {
                     ips.insert(ip.clone(), 1);
                 } else if let Some(v) = ips.get_mut(&ip) {
                     *v += 1;
-                } else {
+                } else if ips.len() < MAX_IP_CHANGES_PER_ID {
                     ips.insert(ip.clone(), 1);
                 }
             } else {
@@ -758,10 +950,17 @@ impl RendezvousServer {
                     if !rr.webrtc_sdp_answer.is_empty() {
                         log::info!("WebRTC answer with relay from {} to {}", rr.id(), addr_b);
                     }
-                    let id = rr.id();
-                    let target_id = id.to_owned(); // HTE: set_pk below replaces the id (same oneof)
+                    let id = rr.id().to_owned();
+                    rr.socket_addr_v6 = self.reply_v6(
+                        addr_b,
+                        &id,
+                        &rr.version,
+                        (!ws).then_some(peer_ip),
+                        &rr.socket_addr_v6,
+                    );
+                    let target_id = id.clone(); // HTE: set_pk below replaces the id (same oneof)
                     if !id.is_empty() {
-                        let pk = self.get_pk(&rr.version, id.to_owned()).await;
+                        let pk = self.get_pk(&rr.version, id).await;
                         rr.set_pk(pk);
                     }
                     if crate::hte_scope::target_answers(&self.pm, &target_id, peer_ip).await { crate::hte_relay_gate::admit(&rr.uuid); } // HTE
@@ -778,13 +977,15 @@ impl RendezvousServer {
                     allow_err!(self.send_to_tcp_sync(msg_out, addr_b).await);
                 }
                 Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
-                    allow_err!(self.handle_hole_sent(phs, addr, None).await);
+                    allow_err!(self.handle_hole_sent(phs, addr, (!ws).then_some(peer_ip)).await);
                 }
                 Some(rendezvous_message::Union::LocalAddr(la)) => {
-                    // The TCP peer, not `addr`: on WebSocket `addr` comes from
-                    // X-Real-IP / X-Forwarded-For, which any client can set.
+                    // `peer_ip` is the client address: the TCP peer, or on
+                    // WebSocket the address a proxy listed in TRUSTED_PROXIES
+                    // names in X-Forwarded-For. Not `addr`, whose port on
+                    // WebSocket is a correlation token, not the client's.
                     policy::note_local_addr(&la.id, AddrMangle::decode(&la.local_addr), peer_ip);
-                    allow_err!(self.handle_local_addr(la, addr, None).await);
+                    allow_err!(self.handle_local_addr(la, addr, (!ws).then_some(peer_ip)).await);
                 }
                 Some(rendezvous_message::Union::IceCandidate(ice)) => {
                     self.handle_ice_candidate(ice, addr, peer_ip).await;
@@ -877,24 +1078,22 @@ impl RendezvousServer {
             request_pk,
             ..Default::default()
         });
-        socket.send(&msg_out, socket_addr).await
+        udp_send(socket, &msg_out, socket_addr).await
     }
 
     #[inline]
-    async fn handle_hole_sent<'a>(
+    /// `sender`: the device's address, `None` on WebSocket.
+    async fn handle_hole_sent(
         &mut self,
         phs: PunchHoleSent,
         addr: SocketAddr,
-        socket: Option<&'a mut FramedSocket>,
+        sender: Option<IpAddr>,
     ) -> ResultType<()> {
         // punch hole sent from B, tell A that B is ready to be connected
         let addr_a = AddrMangle::decode(&phs.socket_addr);
-        log::debug!(
-            "{} punch hole response to {:?} from {:?}",
-            if socket.is_none() { "TCP" } else { "UDP" },
-            &addr_a,
-            &addr
-        );
+        log::debug!("TCP punch hole response to {:?} from {:?}", &addr_a, &addr);
+        let socket_addr_v6 =
+            self.reply_v6(addr_a, &phs.id, &phs.version, sender, &phs.socket_addr_v6);
         if !phs.webrtc_sdp_answer.is_empty() {
             log::info!("WebRTC answer from {} to {}", phs.id, addr_a);
         }
@@ -904,6 +1103,7 @@ impl RendezvousServer {
             pk: self.get_pk(&phs.version, phs.id).await,
             relay_server: phs.relay_server.clone(),
             webrtc_sdp_answer: Self::checked_answer(phs.webrtc_sdp_answer),
+            socket_addr_v6,
             ..Default::default()
         };
         if let Ok(t) = phs.nat_type.enum_value() {
@@ -917,34 +1117,102 @@ impl RendezvousServer {
             .contains_key(&try_into_v4(addr_a))
         {
             self.send_to_tcp_sync(msg_out, addr_a).await?;
-        } else if let Some(socket) = socket {
-            socket.send(&msg_out, addr_a).await?;
         } else {
             self.send_to_tcp(msg_out, addr_a).await;
         }
         Ok(())
     }
 
+    /// A UDP `PunchHoleSent`: the device's answer to a UDP punch, from the
+    /// socket it will punch with. Taken only for an open route that granted
+    /// UDP, naming that route's device, from that device's registered host,
+    /// once. The controller then gets the address the datagram came from.
+    async fn handle_udp_hole_sent(&mut self, phs: PunchHoleSent, addr: SocketAddr) {
+        if !*UDP_PUNCH {
+            return;
+        }
+        let addr_a = try_into_v4(AddrMangle::decode(&phs.socket_addr));
+        let now = Instant::now();
+        let Some(route) = self
+            .punches
+            .lock()
+            .unwrap()
+            .claim_udp(addr_a, &phs.id, addr.ip(), now)
+        else {
+            return;
+        };
+        log::debug!("UDP punch hole response to {:?} from {:?}", addr_a, addr);
+        let socket_addr_v6 = self.reply_v6(addr_a, &phs.id, &phs.version, Some(addr.ip()), &phs.socket_addr_v6);
+        let mut p = PunchHoleResponse {
+            socket_addr: AddrMangle::encode(try_into_v4(addr)).into(),
+            pk: self.get_pk(&phs.version, route.target).await,
+            relay_server: phs.relay_server,
+            is_udp: true,
+            socket_addr_v6,
+            webrtc_sdp_answer: Self::checked_answer(phs.webrtc_sdp_answer),
+            ..Default::default()
+        };
+        if let Ok(t) = phs.nat_type.enum_value() {
+            p.set_nat_type(t);
+        }
+        let mut msg_out = RendezvousMessage::new();
+        msg_out.set_punch_hole_response(p);
+        allow_err!(self.send_to_tcp_sync(msg_out, addr_a).await);
+    }
+
+    /// The device's IPv6 address for the controller at `addr_a`, from a reply
+    /// of device `id` sent by `sender`: only when that controller's route had
+    /// its own IPv6 address go to `id`, the reply comes from the host `id`
+    /// registered from (never over WebSocket, whose address can come from a
+    /// header), and the address is global unicast with a port. Also notes
+    /// which version the device runs. Empty otherwise.
+    fn reply_v6(
+        &self,
+        addr_a: SocketAddr,
+        id: &str,
+        version: &str,
+        sender: Option<IpAddr>,
+        v6: &[u8],
+    ) -> Bytes {
+        let Some(sender) = sender else { return Bytes::new() };
+        let now = Instant::now();
+        let mut punches = self.punches.lock().unwrap();
+        let Some(route) = punches.get(try_into_v4(addr_a), now).cloned() else {
+            return Bytes::new();
+        };
+        if route.target != id || !punch::same_host(route.target_ip, sender) {
+            return Bytes::new();
+        }
+        punches.note_version(id, version, now);
+        if !route.v6 || v6.is_empty() || v6.len() > 18 {
+            return Bytes::new();
+        }
+        let addr = AddrMangle::decode(v6);
+        if !punch::usable_v6(addr) || !punches.v6_back_allowed(addr, now) {
+            return Bytes::new();
+        }
+        log::debug!("IPv6 address of {} back to {}", id, addr_a);
+        AddrMangle::encode(addr).into()
+    }
+
     #[inline]
-    async fn handle_local_addr<'a>(
+    /// `sender`: the device's address, `None` on WebSocket.
+    async fn handle_local_addr(
         &mut self,
         la: LocalAddr,
         addr: SocketAddr,
-        socket: Option<&'a mut FramedSocket>,
+        sender: Option<IpAddr>,
     ) -> ResultType<()> {
         // relay local addrs of B to A
         let addr_a = AddrMangle::decode(&la.socket_addr);
-        log::debug!(
-            "{} local addrs response to {:?} from {:?}",
-            if socket.is_none() { "TCP" } else { "UDP" },
-            &addr_a,
-            &addr
-        );
+        log::debug!("TCP local addrs response to {:?} from {:?}", &addr_a, &addr);
+        let socket_addr_v6 = self.reply_v6(addr_a, &la.id, &la.version, sender, &la.socket_addr_v6);
         let mut msg_out = RendezvousMessage::new();
         let mut p = PunchHoleResponse {
             socket_addr: la.local_addr.clone(),
             pk: self.get_pk(&la.version, la.id).await,
             relay_server: la.relay_server,
+            socket_addr_v6,
             ..Default::default()
         };
         p.set_is_local(true);
@@ -956,8 +1224,6 @@ impl RendezvousServer {
             .contains_key(&try_into_v4(addr_a))
         {
             self.send_to_tcp_sync(msg_out, addr_a).await?;
-        } else if let Some(socket) = socket {
-            socket.send(&msg_out, addr_a).await?;
         } else {
             self.send_to_tcp(msg_out, addr_a).await;
         }
@@ -984,13 +1250,21 @@ impl RendezvousServer {
             });
             return Ok((msg_out, None));
         }
+        if ph.id.len() > MAX_PEER_ID_LEN {
+            let mut msg_out = RendezvousMessage::new();
+            msg_out.set_punch_hole_response(PunchHoleResponse {
+                failure: punch_hole_response::Failure::ID_NOT_EXIST.into(),
+                ..Default::default()
+            });
+            return Ok((msg_out, None));
+        }
         if let Err(reason) = policy::check_initiator(&ph.token, peer_ip, &ph.id) {
             log::info!("Policy: refused punch from {} to {}: {}", peer_ip, ph.id, reason);
             let refusal =
                 Self::punch_refusal(punch_hole_response::Failure::LICENSE_MISMATCH, reason);
             return Ok((refusal, None));
         }
-        let id = ph.id;
+        let id = std::mem::take(&mut ph.id);
         // punch hole request from A, relay to B,
         // check if in same intranet first,
         // fetch local addrs if in same intranet.
@@ -1018,20 +1292,12 @@ impl RendezvousServer {
                 None => unreachable!(),
             };
             // record punch hole request (from addr -> peer id/peer_addr)
-            {
-                let from_ip = try_into_v4(addr).ip().to_string();
-                let to_ip = try_into_v4(peer_addr).ip().to_string();
-                let to_id_clone = id.clone();
-                let mut lock = PUNCH_REQS.lock().await;
-                let mut dup = false;
-                for e in lock.iter().rev().take(30) { // only check recent tail subset for speed
-                    if e.from_ip == from_ip && e.to_id == to_id_clone {
-                        if e.tm.elapsed().as_secs() < PUNCH_REQ_DEDUPE_SEC { dup = true; }
-                        break;
-                    }
-                }
-                if !dup { lock.push(PunchReqEntry { tm: Instant::now(), from_ip, to_ip, to_id: to_id_clone }); }
-            }
+            record_punch_req(
+                try_into_v4(addr).ip().to_string(),
+                try_into_v4(peer_addr).ip().to_string(),
+                id.clone(),
+            )
+            .await;
 
             let mut msg_out = RendezvousMessage::new();
             let peer_is_lan = self.is_lan(peer_addr);
@@ -1044,6 +1310,11 @@ impl RendezvousServer {
                 }
                 ph.nat_type = NatType::SYMMETRIC.into(); // will force relay
             }
+            let relay_forced = ws
+                || peer_ws
+                || ALWAYS_USE_RELAY.load(Ordering::SeqCst)
+                || (peer_is_lan ^ is_lan)
+                || ph.force_relay;
             let same_intranet: bool = !ws
                 && !peer_ws
                 && (peer_is_lan && is_lan || {
@@ -1056,6 +1327,8 @@ impl RendezvousServer {
                     }
                 });
             let socket_addr = AddrMangle::encode(addr).into();
+            let (udp_port, socket_addr_v6) =
+                self.grant_punch(&ph, addr, peer_ip, &id, peer_addr, relay_forced, same_intranet);
             if same_intranet {
                 log::debug!(
                     "Fetch local addr {:?} {:?} request from {:?}",
@@ -1067,6 +1340,7 @@ impl RendezvousServer {
                     socket_addr,
                     relay_server,
                     controlled_context: Self::audit_context("lan"),
+                    socket_addr_v6,
                     ..Default::default()
                 });
             } else {
@@ -1097,6 +1371,8 @@ impl RendezvousServer {
                     relay_server,
                     controlled_context: Self::audit_context(path),
                     webrtc_sdp_offer,
+                    udp_port,
+                    socket_addr_v6,
                     ..Default::default()
                 });
             }
@@ -1109,6 +1385,69 @@ impl RendezvousServer {
             });
             Ok((msg_out, None))
         }
+    }
+
+    /// What a punch request may pass on to the device (issue #18): its
+    /// `udp_port` and its own IPv6 address. Only from a 1.5 or newer controller
+    /// that did not ask for a relay, to a device not known to run an older
+    /// client, when nothing forces the relay. An older controller's UDP and
+    /// IPv6 attempts hold up its relay fallback for up to 20 seconds, so it gets
+    /// a TCP punch as before. Opens the route the device's reply needs.
+    #[allow(clippy::too_many_arguments)]
+    fn grant_punch(
+        &self,
+        ph: &PunchHoleRequest,
+        addr: SocketAddr,
+        peer_ip: IpAddr,
+        id: &str,
+        peer_addr: SocketAddr,
+        relay_forced: bool,
+        same_intranet: bool,
+    ) -> (i32, Bytes) {
+        if relay_forced || !punch::is_1_5(&ph.version) {
+            return (0, Bytes::new());
+        }
+        let now = Instant::now();
+        let mut punches = self.punches.lock().unwrap();
+        if punches.is_old_client(id, now) {
+            return (0, Bytes::new());
+        }
+        // FetchLocalAddr has no UDP port: on a LAN the device connects locally.
+        let udp_port = if *UDP_PUNCH && !same_intranet && (1..=65535).contains(&ph.udp_port) {
+            ph.udp_port
+        } else {
+            0
+        };
+        let v6 = if *IPV6_PUNCH && (1..=18).contains(&ph.socket_addr_v6.len()) {
+            let v6 = AddrMangle::decode(&ph.socket_addr_v6);
+            (punch::usable_v6(v6) && punches.v6_allowed(peer_ip, v6, now)).then_some(v6)
+        } else {
+            None
+        };
+        if udp_port == 0 && v6.is_none() {
+            return (0, Bytes::new());
+        }
+        let opened = punches.open(
+            try_into_v4(addr),
+            punch::Route {
+                target: id.to_owned(),
+                target_ip: norm_ip(peer_addr.ip()),
+                udp: udp_port > 0,
+                v6: v6.is_some(),
+                created: now,
+            },
+        );
+        if !opened {
+            return (0, Bytes::new());
+        }
+        log::debug!(
+            "Punch route {} -> {}: udp {}, ipv6 {}",
+            addr,
+            id,
+            udp_port > 0,
+            v6.is_some()
+        );
+        (udp_port, v6.map(|v6| AddrMangle::encode(v6).into()).unwrap_or_default())
     }
 
     /// A punch hole refusal the client shows as text. `other_failure` is what
@@ -1398,33 +1737,42 @@ impl RendezvousServer {
     }
 
     async fn check_ip_blocker(&self, ip: &str, id: &str) -> bool {
-        let mut lock = IP_BLOCKER.lock().await;
-        let now = Instant::now();
-        if let Some(old) = lock.get_mut(ip) {
-            let counter = &mut old.0;
-            if counter.1.elapsed().as_secs() > IP_BLOCK_DUR {
-                counter.0 = 0;
-            } else if counter.0 > 30 {
-                return false;
-            }
-            counter.0 += 1;
-            counter.1 = now;
+        ip_blocker_allows(
+            &mut *IP_BLOCKER.lock().await,
+            ip,
+            id,
+            *MAX_REGISTER_BURST_PER_IP,
+            *MAX_NEW_IDS_PER_IP,
+            MAX_IP_BLOCKER_ENTRIES,
+        )
+    }
 
-            let counter = &mut old.1;
-            let is_new = counter.0.get(id).is_none();
-            if counter.1.elapsed().as_secs() > DAY_SECONDS {
-                counter.0.clear();
-            } else if counter.0.len() > 300 {
-                return !is_new;
+    /// The `release-id` admin command: forget a peer so another machine can
+    /// take its ID (issue #19). One line back: `OK <id>`, `OK <id> online` when
+    /// it was online (it may register again at once if it still runs),
+    /// `NOT_FOUND <id>`, or `ERROR <reason>`.
+    async fn release_id(&self, id: &str) -> String {
+        // Not while a registration of this ID is in progress.
+        let lock = self.registration_locks.get(id);
+        let guard = lock.clone().lock_owned().await;
+        let result = self.pm.release(id).await;
+        drop(guard);
+        self.registration_locks.release(id, lock);
+        match result {
+            Ok(Some(online)) => {
+                log::info!("Released ID {} (online: {})", id, online);
+                if online {
+                    format!("OK {id} online\n")
+                } else {
+                    format!("OK {id}\n")
+                }
             }
-            if is_new {
-                counter.0.insert(id.to_owned());
+            Ok(None) => format!("NOT_FOUND {id}\n"),
+            Err(err) => {
+                log::error!("Failed to release ID {}: {}", id, err);
+                format!("ERROR {}\n", err.to_string().replace('\n', " "))
             }
-            counter.1 = now;
-        } else {
-            lock.insert(ip.to_owned(), ((0, now), (Default::default(), now)));
         }
-        true
     }
 
     fn parse_relay_servers(&mut self, relay_servers: &str) {
@@ -1451,16 +1799,23 @@ impl RendezvousServer {
         match fds.next() {
             Some("h") => {
                 res = format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                     "relay-servers(rs) <separated by ,>",
                     "reload-geo(rg)",
                     "ip-blocker(ib) [<ip>|<number>] [-]",
                     "ip-changes(ic) [<id>|<number>] [-]",
                     "punch-requests(pr) [<number>] [-]",
-                    "always-use-relay(aur)",
+                    "always-use-relay(aur) [Y|N]",
                     "test-geo(tg) <ip1> <ip2>",
-                    "policy(pol)"
+                    "policy(pol)",
+                    "release-id(rid) <id>"
                 )
+            }
+            Some("release-id" | "rid") => {
+                res = match fds.next().filter(|id| !id.is_empty()) {
+                    None => "ERROR usage: release-id <id>\n".to_owned(),
+                    Some(id) => self.release_id(id).await,
+                };
             }
             Some("relay-servers" | "rs") => {
                 if let Some(rs) = fds.next() {
@@ -1582,7 +1937,6 @@ impl RendezvousServer {
                     } else {
                         ALWAYS_USE_RELAY.store(false, Ordering::SeqCst);
                     }
-                    self.tx.send(Data::RelayServers0(rs.to_owned())).ok();
                 } else {
                     let _ = writeln!(
                         res,
@@ -1622,13 +1976,14 @@ impl RendezvousServer {
                 if let Ok(Ok(n)) = timeout(1000, stream.read(&mut buffer[..])).await {
                     if let Ok(data) = std::str::from_utf8(&buffer[..n]) {
                         let res = rs.check_cmd(data).await;
-                        stream.write(res.as_bytes()).await.ok();
+                        stream.write_all(res.as_bytes()).await.ok();
                     }
                 }
             });
             return;
         }
-        let stream = FramedStream::from(stream, addr);
+        let mut stream = FramedStream::from(stream, addr);
+        *stream.codec_mut() = signal_codec();
         tokio::spawn(async move {
             let mut stream = stream;
             if let Some(Ok(bytes)) = stream.next_timeout(30_000).await {
@@ -1680,13 +2035,17 @@ impl RendezvousServer {
             };
             let stream = timeout(
                 WRITE_TIMEOUT,
-                tokio_tungstenite::accept_hdr_async(stream, callback),
+                tokio_tungstenite::accept_hdr_async_with_config(
+                    stream,
+                    callback,
+                    Some(signal_ws_config()),
+                ),
             )
             .await??;
             let (tx, rx) = stream.split();
             (Sink::Ws(tx), Reader::Ws(rx), None)
         } else {
-            let (tx, rx) = Framed::new(stream, BytesCodec::new()).split();
+            let (tx, rx) = Framed::new(stream, signal_codec()).split();
             let mut sink = TcpSink {
                 sink: tx,
                 encrypt: None,
@@ -1752,9 +2111,11 @@ impl RendezvousServer {
                             dec.dec(&mut bytes)?;
                         } else if let Some(secret) = exchange_sk.as_ref() {
                             match Self::key_exchange_accept(&bytes, secret) {
-                                Some(Ok(key)) => {
-                                    decrypt = Some(Encrypt::new(key.clone()));
-                                    if let Sink::TcpStream(sink) = &mut writer { sink.encrypt = Some(Encrypt::new(key)); }
+                                Some(Ok(cipher)) => {
+                                    // One copy decrypts, the other encrypts: each
+                                    // advances only its own direction's counter.
+                                    decrypt = Some(cipher.clone());
+                                    if let Sink::TcpStream(sink) = &mut writer { sink.encrypt = Some(cipher); }
                                     connection.set_secure();
                                     exchange_sk = None;
                                     continue;
@@ -1821,6 +2182,7 @@ impl RendezvousServer {
         }
         {
             self.webrtc.lock().await.close(connection.addr);
+            self.punches.lock().unwrap().close(connection.addr);
         }
         writer.close().await;
         log::debug!(
@@ -1861,40 +2223,27 @@ impl RendezvousServer {
     async fn key_exchange_offer(
         sk: Option<&sign::SecretKey>,
         sink: &mut TcpSink,
-    ) -> Option<box_::SecretKey> {
-        let sk = sk?;
-        let (our_pk_b, our_sk_b) = box_::gen_keypair();
+    ) -> Option<KxOffer> {
+        let (ex, offer) = KxOffer::new(sk?);
         let mut msg_out = RendezvousMessage::new();
-        msg_out.set_key_exchange(KeyExchange {
-            keys: vec![sign::sign(&our_pk_b.0, sk).into()],
-            ..Default::default()
-        });
+        msg_out.set_key_exchange(ex);
         let bytes = msg_out.write_to_bytes().ok()?;
         sink.sink.send(Bytes::from(bytes)).await.ok()?;
-        Some(our_sk_b)
+        Some(offer)
     }
 
     /// Server half of the signalling handshake, step 2: unseal the symmetric
-    /// key the client generated for the rest of this connection.
+    /// key the client generated for the rest of this connection, and make the
+    /// cipher for the version it picked: version 0 uses that key both ways,
+    /// version 1 one key per direction bound to the exchange (issue #17).
     ///
     /// `None` means the frame was not a key exchange at all and belongs to the
     /// normal message path; `Some(Err(..))` means it was one and was bad, which
     /// is fatal for the connection.
-    fn key_exchange_accept(
-        bytes: &[u8],
-        our_sk_b: &box_::SecretKey,
-    ) -> Option<ResultType<secretbox::Key>> {
+    fn key_exchange_accept(bytes: &[u8], offer: &KxOffer) -> Option<ResultType<Encrypt>> {
         let msg_in = RendezvousMessage::parse_from_bytes(bytes).ok()?;
         match msg_in.union {
-            Some(rendezvous_message::Union::KeyExchange(ex)) => {
-                if ex.keys.len() != 2 {
-                    return Some(Err(anyhow!(
-                        "Handshake failed: expected 2 keys, got {}",
-                        ex.keys.len()
-                    )));
-                }
-                Some(Encrypt::decode(&ex.keys[1], &ex.keys[0], our_sk_b))
-            }
+            Some(rendezvous_message::Union::KeyExchange(ex)) => Some(offer.accept(&ex)),
             _ => None,
         }
     }
@@ -1925,7 +2274,7 @@ impl RendezvousServer {
     }
 
     #[inline]
-    fn get_server_sk(key: &str) -> (String, Option<sign::SecretKey>) {
+    fn get_server_sk(key: &str) -> ResultType<(String, Option<sign::SecretKey>)> {
         let mut out_sk = None;
         let mut key = key.to_owned();
         if let Ok(sk) = base64::decode(&key) {
@@ -1939,7 +2288,7 @@ impl RendezvousServer {
         }
 
         if key.is_empty() || key == "-" || key == "_" {
-            let (pk, sk) = crate::common::gen_sk(0);
+            let (pk, sk) = crate::common::gen_sk(0)?;
             out_sk = sk;
             if !key.is_empty() {
                 key = pk;
@@ -1949,7 +2298,7 @@ impl RendezvousServer {
         if !key.is_empty() {
             log::info!("Key: {}", key);
         }
-        (key, out_sk)
+        Ok((key, out_sk))
     }
 
     #[inline]
@@ -1999,6 +2348,62 @@ async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
 }
 
 // temp solution to solve udp socket failure
+/// Watchdog state of the UDP self-test.
+struct SelfTest {
+    answered: bool,
+    last_answer: Instant,
+    failing: bool,
+}
+
+impl SelfTest {
+    const TIMEOUT_SECS: u64 = 12;
+
+    fn new() -> Self {
+        Self {
+            answered: false,
+            last_answer: Instant::now(),
+            failing: false,
+        }
+    }
+
+    fn answer(&mut self) {
+        self.answered = true;
+        self.last_answer = Instant::now();
+    }
+
+    /// The outcome of one send. A failure before any answer means the test
+    /// cannot run on this address (for example no IPv6 loopback) and is
+    /// returned. Later ones are logged and the send is retried: a request that
+    /// was not sent gets no answer, so they do not count towards the timeout.
+    fn sent(&mut self, addr: SocketAddr, res: ResultType<()>) -> ResultType<()> {
+        match res {
+            Ok(()) => {
+                if self.failing {
+                    log::info!("hbbs self-test: sending to {addr} works again");
+                    self.failing = false;
+                }
+            }
+            Err(err) if !self.answered => return Err(err),
+            Err(err) => {
+                if !self.failing {
+                    log::warn!("hbbs self-test: send to {addr} failed, retrying: {err}");
+                    self.failing = true;
+                }
+                self.last_answer = Instant::now();
+            }
+        }
+        Ok(())
+    }
+
+    fn timed_out(&self) -> bool {
+        self.last_answer.elapsed().as_secs() > Self::TIMEOUT_SECS
+    }
+}
+
+/// Sends a `RegisterPeer` to this hbbs every second. If hbbs stops answering
+/// requests that were sent, its UDP socket is assumed dead and the process
+/// exits so its supervisor restarts it, as upstream does. Failed sends never
+/// end it (issue #11).
 async fn test_hbbs(addr: SocketAddr) -> ResultType<()> {
     let mut addr = addr;
     if addr.ip().is_unspecified() {
@@ -2015,21 +2420,26 @@ async fn test_hbbs(addr: SocketAddr) -> ResultType<()> {
         id: "(:test_hbbs:)".to_owned(),
         ..Default::default()
     });
-    let mut last_time_recv = Instant::now();
+    let mut state = SelfTest::new();
 
     let mut timer = interval(Duration::from_secs(1));
     loop {
         tokio::select! {
           _ = timer.tick() => {
-              if last_time_recv.elapsed().as_secs() > 12 {
-                  bail!("Timeout of test_hbbs");
+              if state.timed_out() {
+                  if !state.answered {
+                      bail!("Timeout of test_hbbs");
+                  }
+                  log::error!("hbbs stopped answering its UDP self-test on {addr}; exiting to be restarted");
+                  std::process::exit(1);
               }
-              socket.send(&msg_out, addr).await?;
+              let res = udp_send(&mut socket, &msg_out, addr).await;
+              state.sent(addr, res)?;
           }
           Some(Ok((bytes, _))) = socket.next() => {
               if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
                  log::trace!("Recv {:?} of test_hbbs", msg_in);
-                 last_time_recv = Instant::now();
+                 state.answer();
               }
           }
         }
@@ -2047,7 +2457,35 @@ async fn send_rk_res(
         result: res.into(),
         ..Default::default()
     });
-    socket.send(&msg_out, addr).await
+    udp_send(socket, &msg_out, addr).await
+}
+
+/// Sends one datagram. `FramedSocket::send` goes through tokio-util's
+/// `UdpFramed` sink, which keeps a datagram whose send failed and retries it
+/// before every later one, so one bad destination failed every reply after it
+/// until the socket was rebuilt (issue #9). This writes to the socket itself.
+async fn udp_send(
+    socket: &mut FramedSocket,
+    msg: &impl hbb_common::protobuf::Message,
+    addr: SocketAddr,
+) -> ResultType<()> {
+    match socket {
+        FramedSocket::Direct(framed) => {
+            framed.get_ref().send_to(&msg.write_to_bytes()?, addr).await?;
+            Ok(())
+        }
+        socket => socket.send(msg, addr).await,
+    }
+}
+
+/// Whether a datagram's source can be answered: a port, and a unicast address.
+/// Nothing is sent to port 0, broadcast, multicast or the unspecified address.
+fn is_unicast_source(addr: SocketAddr) -> bool {
+    addr.port() != 0
+        && match norm_ip(addr.ip()) {
+            IpAddr::V4(ip) => !(ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast()),
+            IpAddr::V6(ip) => !(ip.is_unspecified() || ip.is_multicast()),
+        }
 }
 
 async fn create_udp_listener(
@@ -2082,24 +2520,41 @@ mod key_exchange_tests {
     //! Wire-level tests for the signalling handshake.
     //!
     //! The client half here is written to the same algorithm the RustDesk
-    //! client uses, so these tests are a compatibility check and not just a
-    //! round trip against ourselves: if either side of the exchange drifts,
-    //! real clients stop connecting and these tests stop passing together.
+    //! client uses (1.4 for version 0, 1.5 for version 1), so these tests are a
+    //! compatibility check and not just a round trip against ourselves: if
+    //! either side of the exchange drifts, real clients stop connecting and
+    //! these tests stop passing together.
 
     use super::*;
     use hbb_common::tokio::net::TcpListener as TokioTcpListener;
+    use sodiumoxide::crypto::secretbox;
+
+    /// Which client answers the offer.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Client {
+        /// Before 1.5: ignores `version` and `signed_params`, answers version 0.
+        Legacy,
+        /// 1.5: checks the signed parameters when the key's bit 255 asks for
+        /// them, and picks the highest version both speak.
+        V1,
+    }
+
+    fn offer_of(offer: &[u8]) -> ResultType<KeyExchange> {
+        match RendezvousMessage::parse_from_bytes(offer)?.union {
+            Some(rendezvous_message::Union::KeyExchange(ex)) => Ok(ex),
+            _ => bail!("not a key exchange"),
+        }
+    }
 
     /// The client half of step 2: verify the server's signed public key, mint a
-    /// symmetric key for the connection, and seal it to the server.
+    /// symmetric key for the connection, seal it to the server, and make the
+    /// client's cipher for the version it picked.
     fn client_reply(
         offer: &[u8],
         server_pk: &sign::PublicKey,
-    ) -> ResultType<(RendezvousMessage, secretbox::Key)> {
-        let msg_in = RendezvousMessage::parse_from_bytes(offer)?;
-        let ex = match msg_in.union {
-            Some(rendezvous_message::Union::KeyExchange(ex)) => ex,
-            _ => bail!("not a key exchange"),
-        };
+        client: Client,
+    ) -> ResultType<(RendezvousMessage, Encrypt)> {
+        let ex = offer_of(offer)?;
         if ex.keys.len() != 1 {
             bail!("expected 1 key, got {}", ex.keys.len());
         }
@@ -2108,26 +2563,61 @@ mod key_exchange_tests {
         if their_pk_b.len() != box_::PUBLICKEYBYTES {
             bail!("wrong public key length");
         }
-        let mut pk_ = [0u8; box_::PUBLICKEYBYTES];
-        pk_.copy_from_slice(&their_pk_b);
-        let their_pk_b = box_::PublicKey(pk_);
+        let mut pk = [0u8; box_::PUBLICKEYBYTES];
+        pk.copy_from_slice(&their_pk_b);
+        let mut advertised = 0;
+        if client == Client::V1 {
+            if pk[box_::PUBLICKEYBYTES - 1] & 0x80 != 0 || !ex.signed_params.is_empty() {
+                let params = sign::verify(&ex.signed_params, server_pk)
+                    .ok()
+                    .and_then(|p| KxParams::parse_from_bytes(p.strip_prefix(KX_PARAMS_DOMAIN)?).ok())
+                    .ok_or_else(|| anyhow!("missing or invalid signed key exchange parameters"))?;
+                if params.pk[..] != pk[..] || params.version != ex.version {
+                    bail!("version or key does not match its signature");
+                }
+            }
+            advertised = ex.version;
+        }
+        let picked = hbb_common::tcp::kx_version_for(advertised);
 
         let (our_pk_b, our_sk_b) = box_::gen_keypair();
         let key = secretbox::gen_key();
         let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
-        let sealed = box_::seal(&key.0, &nonce, &their_pk_b, &our_sk_b);
+        let sealed = box_::seal(&key.0, &nonce, &box_::PublicKey(pk), &our_sk_b);
 
         let mut msg_out = RendezvousMessage::new();
         msg_out.set_key_exchange(KeyExchange {
             keys: vec![Vec::from(our_pk_b.0).into(), sealed.into()],
+            version: picked,
             ..Default::default()
         });
-        Ok((msg_out, key))
+        let cipher = if picked == 0 {
+            Encrypt::new(key)
+        } else {
+            Encrypt::new_split(
+                key,
+                true,
+                &KxTranscript {
+                    initiator_pk: &our_pk_b.0,
+                    responder_pk: &pk,
+                    advertised,
+                    picked,
+                },
+            )?
+        };
+        Ok((msg_out, cipher))
     }
 
-    /// Full handshake over a real socket, then an encrypted message each way.
+    /// Full handshake over a real socket, then an encrypted message each way,
+    /// for an older client (version 0) and a 1.5 client (version 1).
     #[tokio::test]
     async fn secures_a_connection_and_both_directions_decrypt() {
+        for client in [Client::Legacy, Client::V1] {
+            secures_with(client).await;
+        }
+    }
+
+    async fn secures_with(client: Client) {
         let (server_pk, server_sk) = sign::gen_keypair();
         let listener = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2139,16 +2629,16 @@ mod key_exchange_tests {
                 sink: a,
                 encrypt: None,
             };
-            let our_sk_b = RendezvousServer::key_exchange_offer(Some(&server_sk), &mut sink)
+            let offer = RendezvousServer::key_exchange_offer(Some(&server_sk), &mut sink)
                 .await
                 .expect("offer sent");
 
             let mut bytes = b.next().await.unwrap().unwrap();
-            let key = RendezvousServer::key_exchange_accept(&bytes, &our_sk_b)
+            let cipher = RendezvousServer::key_exchange_accept(&bytes, &offer)
                 .expect("frame was a key exchange")
                 .expect("key exchange accepted");
-            let mut decrypt = Encrypt::new(key.clone());
-            sink.encrypt = Some(Encrypt::new(key));
+            let mut decrypt = cipher.clone();
+            sink.encrypt = Some(cipher);
 
             // Server -> client, encrypted.
             let mut msg_out = RendezvousMessage::new();
@@ -2157,33 +2647,39 @@ mod key_exchange_tests {
                 ..Default::default()
             });
             let mut wrapped = Some(Sink::TcpStream(sink));
+            RendezvousServer::send_to_sink(&mut wrapped, msg_out.clone()).await;
             RendezvousServer::send_to_sink(&mut wrapped, msg_out).await;
 
-            // Client -> server, encrypted.
-            bytes = b.next().await.unwrap().unwrap();
-            decrypt.dec(&mut bytes).expect("decrypts client traffic");
-            let msg_in = RendezvousMessage::parse_from_bytes(&bytes).unwrap();
-            match msg_in.union {
-                Some(rendezvous_message::Union::RegisterPeer(rp)) => rp.id,
-                _ => panic!("unexpected message after handshake"),
+            // Client -> server, encrypted, twice: counters stay in step.
+            let mut ids = Vec::new();
+            for _ in 0..2 {
+                bytes = b.next().await.unwrap().unwrap();
+                decrypt.dec(&mut bytes).expect("decrypts client traffic");
+                match RendezvousMessage::parse_from_bytes(&bytes).unwrap().union {
+                    Some(rendezvous_message::Union::RegisterPeer(rp)) => ids.push(rp.id),
+                    _ => panic!("unexpected message after handshake"),
+                }
             }
+            ids
         });
 
         let stream = TcpStream::connect(addr).await.unwrap();
         let (mut a, mut b) = Framed::new(stream, BytesCodec::new()).split();
         let offer = b.next().await.unwrap().unwrap();
-        let (reply, key) = client_reply(&offer, &server_pk).expect("offer accepted by client");
+        let (reply, mut cipher) =
+            client_reply(&offer, &server_pk, client).expect("offer accepted by client");
+        assert_eq!(reply.key_exchange().version, if client == Client::V1 { 1 } else { 0 });
         a.send(Bytes::from(reply.write_to_bytes().unwrap()))
             .await
             .unwrap();
-        let mut cipher = Encrypt::new(key);
 
-        let mut bytes = b.next().await.unwrap().unwrap();
-        cipher.dec(&mut bytes).expect("decrypts server traffic");
-        let msg_in = RendezvousMessage::parse_from_bytes(&bytes).unwrap();
-        match msg_in.union {
-            Some(rendezvous_message::Union::TestNatResponse(r)) => assert_eq!(r.port, 4242),
-            _ => panic!("unexpected message from server"),
+        for _ in 0..2 {
+            let mut bytes = b.next().await.unwrap().unwrap();
+            cipher.dec(&mut bytes).expect("decrypts server traffic");
+            match RendezvousMessage::parse_from_bytes(&bytes).unwrap().union {
+                Some(rendezvous_message::Union::TestNatResponse(r)) => assert_eq!(r.port, 4242),
+                _ => panic!("unexpected message from server"),
+            }
         }
 
         let mut msg_out = RendezvousMessage::new();
@@ -2191,11 +2687,47 @@ mod key_exchange_tests {
             id: "handshake-test".to_owned(),
             ..Default::default()
         });
-        a.send(Bytes::from(cipher.enc(&msg_out.write_to_bytes().unwrap())))
-            .await
-            .unwrap();
+        for _ in 0..2 {
+            a.send(Bytes::from(cipher.enc(&msg_out.write_to_bytes().unwrap())))
+                .await
+                .unwrap();
+        }
 
-        assert_eq!(server.await.unwrap(), "handshake-test");
+        assert_eq!(server.await.unwrap(), vec!["handshake-test"; 2], "{client:?}");
+    }
+
+    /// The offer advertises version 1, marks its key and signs both.
+    #[test]
+    fn the_offer_is_marked_and_signed_for_version_1() {
+        let (server_pk, server_sk) = sign::gen_keypair();
+        let (ex, offer) = KxOffer::new(&server_sk);
+        assert_eq!(ex.version, KX_VERSION_LATEST);
+        let pk = sign::verify(&ex.keys[0], &server_pk).unwrap();
+        assert_eq!(&pk[..], &offer.pk[..]);
+        assert_ne!(pk[box_::PUBLICKEYBYTES - 1] & 0x80, 0);
+        let params = sign::verify(&ex.signed_params, &server_pk).unwrap();
+        let params = KxParams::parse_from_bytes(params.strip_prefix(KX_PARAMS_DOMAIN).unwrap()).unwrap();
+        assert_eq!((&params.pk[..], params.version), (&pk[..], KX_VERSION_LATEST));
+    }
+
+    /// Version 1 seals the same thing differently in each direction, and a
+    /// 1.5 client refuses an offer whose version was stripped.
+    #[test]
+    fn version_1_keys_differ_per_direction_and_resist_stripping() {
+        let (server_pk, server_sk) = sign::gen_keypair();
+        let mut msg = RendezvousMessage::new();
+        let (ex, offer) = KxOffer::new(&server_sk);
+        msg.set_key_exchange(ex.clone());
+        let (reply, mut client) =
+            client_reply(&msg.write_to_bytes().unwrap(), &server_pk, Client::V1).unwrap();
+        let mut server = offer.accept(reply.key_exchange()).unwrap();
+        assert_ne!(client.enc(b"x"), server.enc(b"x"));
+
+        let mut stripped = ex;
+        stripped.version = 0;
+        stripped.signed_params = Default::default();
+        msg.set_key_exchange(stripped);
+        assert!(client_reply(&msg.write_to_bytes().unwrap(), &server_pk, Client::V1).is_err());
     }
 
     /// A server with no key pair must not offer: the signature is the only
@@ -2231,54 +2763,55 @@ mod key_exchange_tests {
     /// rather than being torn down.
     #[test]
     fn plain_client_traffic_is_not_mistaken_for_a_handshake() {
-        let (_, our_sk_b) = box_::gen_keypair();
+        let (_, offer) = KxOffer::new(&sign::gen_keypair().1);
         let mut msg = RendezvousMessage::new();
         msg.set_punch_hole_request(PunchHoleRequest {
             id: "123456789".to_owned(),
             ..Default::default()
         });
         let bytes = msg.write_to_bytes().unwrap();
-        assert!(RendezvousServer::key_exchange_accept(&bytes, &our_sk_b).is_none());
+        assert!(RendezvousServer::key_exchange_accept(&bytes, &offer).is_none());
         // Garbage is not a handshake either.
-        assert!(RendezvousServer::key_exchange_accept(b"\x01\x02\x03", &our_sk_b).is_none());
+        assert!(RendezvousServer::key_exchange_accept(b"\x01\x02\x03", &offer).is_none());
     }
 
-    /// A malformed or undecryptable exchange is fatal for that connection —
-    /// silently continuing in plain text would let anyone strip the encryption.
+    /// A malformed or undecryptable exchange, or one for a version we do not
+    /// speak, is fatal for that connection — silently continuing in plain
+    /// text would let anyone strip the encryption.
     #[test]
     fn a_bad_exchange_is_an_error_not_a_fallback() {
-        let (_, our_sk_b) = box_::gen_keypair();
-
-        let mut msg = RendezvousMessage::new();
-        msg.set_key_exchange(KeyExchange {
+        let (server_pk, server_sk) = sign::gen_keypair();
+        let (ex, offer) = KxOffer::new(&server_sk);
+        let bad = |ex: KeyExchange| {
+            let mut msg = RendezvousMessage::new();
+            msg.set_key_exchange(ex);
+            RendezvousServer::key_exchange_accept(&msg.write_to_bytes().unwrap(), &offer)
+                .expect("recognised as a key exchange")
+                .is_err()
+        };
+        assert!(bad(KeyExchange {
             keys: vec![vec![0u8; box_::PUBLICKEYBYTES].into()],
             ..Default::default()
-        });
-        let bytes = msg.write_to_bytes().unwrap();
-        assert!(RendezvousServer::key_exchange_accept(&bytes, &our_sk_b)
-            .expect("recognised as a key exchange")
-            .is_err());
+        }));
 
         // Right shape, sealed to somebody else's key.
-        let (other_pk_b, other_sk_b) = box_::gen_keypair();
+        let (other_pk_b, _) = box_::gen_keypair();
         let (client_pk_b, client_sk_b) = box_::gen_keypair();
         let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
-        let sealed = box_::seal(
-            &secretbox::gen_key().0,
-            &nonce,
-            &other_pk_b,
-            &client_sk_b,
-        );
-        let _ = other_sk_b;
-        let mut msg = RendezvousMessage::new();
-        msg.set_key_exchange(KeyExchange {
+        let sealed = box_::seal(&secretbox::gen_key().0, &nonce, &other_pk_b, &client_sk_b);
+        assert!(bad(KeyExchange {
             keys: vec![Vec::from(client_pk_b.0).into(), sealed.into()],
             ..Default::default()
-        });
-        let bytes = msg.write_to_bytes().unwrap();
-        assert!(RendezvousServer::key_exchange_accept(&bytes, &our_sk_b)
-            .expect("recognised as a key exchange")
-            .is_err());
+        }));
+
+        // A good reply, but for a version past ours.
+        let mut msg = RendezvousMessage::new();
+        msg.set_key_exchange(ex);
+        let (reply, _) =
+            client_reply(&msg.write_to_bytes().unwrap(), &server_pk, Client::V1).unwrap();
+        let mut newer = reply.key_exchange().clone();
+        newer.version = KX_VERSION_LATEST + 1;
+        assert!(bad(newer));
     }
 }
 
@@ -2291,5 +2824,87 @@ mod tests {
         let bind_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let socket = create_udp_listener(Some(bind_addr), 0, 0).await.unwrap();
         assert_eq!(socket.local_addr().unwrap().ip(), bind_addr);
+    }
+
+    #[test]
+    fn only_unicast_sources_are_answered() {
+        for ok in ["192.0.2.1:21116", "[2001:db8::1]:5", "[::ffff:192.0.2.1]:5"] {
+            assert!(is_unicast_source(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in [
+            "192.0.2.1:0",
+            "0.0.0.0:5",
+            "255.255.255.255:5",
+            "224.0.0.1:5",
+            "[::]:5",
+            "[ff02::1]:5",
+            "[::ffff:255.255.255.255]:5",
+        ] {
+            assert!(!is_unicast_source(bad.parse().unwrap()), "{bad}");
+        }
+    }
+
+    /// A send that fails leaves nothing behind: the next one, to another
+    /// address, goes out (issue #9). Through `FramedSocket::send` it would
+    /// retry the failed datagram first and fail too.
+    #[hbb_common::tokio::test]
+    async fn a_failed_udp_send_does_not_block_the_next() {
+        let mut socket = FramedSocket::new("0.0.0.0:0").await.unwrap();
+        let receiver = hbb_common::tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut msg = RendezvousMessage::new();
+        msg.set_register_peer_response(RegisterPeerResponse::default());
+        // No SO_BROADCAST on this socket: sending to broadcast fails.
+        assert!(udp_send(&mut socket, &msg, "255.255.255.255:9".parse().unwrap())
+            .await
+            .is_err());
+        udp_send(&mut socket, &msg, receiver.local_addr().unwrap()).await.unwrap();
+        let mut buf = [0u8; 64];
+        let (n, _) = timeout(2_000, receiver.recv_from(&mut buf)).await.unwrap().unwrap();
+        assert_eq!(&buf[..n], &msg.write_to_bytes().unwrap()[..]);
+    }
+
+    #[test]
+    fn self_test_survives_failed_sends() {
+        let addr: SocketAddr = "127.0.0.1:21116".parse().unwrap();
+        let failed = || -> ResultType<()> { Err(anyhow!("Operation not permitted (os error 1)")) };
+        // Before any answer: the test cannot run here; the caller falls back.
+        let mut state = SelfTest::new();
+        assert!(state.sent(addr, failed()).is_err());
+        // Once hbbs has answered, a failed send is retried and never counts
+        // towards the timeout, however long it lasts.
+        let mut state = SelfTest::new();
+        state.answer();
+        state.last_answer = Instant::now() - Duration::from_secs(60);
+        assert!(state.timed_out());
+        assert!(state.sent(addr, failed()).is_ok());
+        assert!(state.failing && !state.timed_out());
+        assert!(state.sent(addr, Ok(())).is_ok());
+        assert!(!state.failing);
+        // Sends that work but get no answer still time out.
+        state.last_answer = Instant::now() - Duration::from_secs(SelfTest::TIMEOUT_SECS + 1);
+        assert!(state.sent(addr, Ok(())).is_ok());
+        assert!(state.timed_out());
+    }
+
+    #[hbb_common::tokio::test]
+    async fn punch_reqs_bounded() {
+        let max = *PUNCH_REQ_MAX;
+        // 31 ids keep every request just outside the 30-entry dedupe window;
+        // at least one request, so MAX_PUNCH_REQUESTS=0 is exercised too.
+        for i in 0..(max * 2).max(1) {
+            record_punch_req(
+                "1.2.3.4".to_owned(),
+                "5.6.7.8".to_owned(),
+                format!("peer{}", i % 31),
+            )
+            .await;
+        }
+        let lock = PUNCH_REQS.lock().await;
+        assert_eq!(lock.len(), max);
+        if max > 0 {
+            // The oldest half is dropped and the newest kept.
+            assert_eq!(lock.front().unwrap().to_id, format!("peer{}", max % 31));
+            assert_eq!(lock.back().unwrap().to_id, format!("peer{}", (max * 2 - 1) % 31));
+        }
     }
 }

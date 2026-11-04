@@ -7,6 +7,7 @@ mod hte_relay_gate; // HTE
 mod hte_scope; // HTE
 mod hte_webrtc; // HTE
 mod policy;
+mod punch;
 mod webrtc_signal;
 mod version;
 

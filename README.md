@@ -90,7 +90,7 @@ APP_URL=https://remote.example.com           # the public address; the relay add
 HTE_CONSOLE_PUBLIC_URL=https://remote.example.com
 APP_NAME=HTE Remote
 HTE_SIGNIN_DOMAIN=example.com                # optional: the e-mail domain the sign-in page names
-TRUSTED_PROXIES=172.16.0.0/12                # the reverse proxy's network
+TRUSTED_PROXIES=172.16.0.0/12                # the reverse proxy's address or network, as the container sees it (required for the web client, see below)
 ```
 
 Reverse proxy (Caddy) — the console, and the web client's WebSocket bridge to `hbbs`/`hbbr`. Overwrite the forwarding headers
@@ -131,7 +131,7 @@ read. The most used variables:
 | `HTE_CONSOLE_PUBLIC_URL` | `APP_URL` | Origin for links and the OIDC redirect URI (never taken from the Host header) |
 | `APP_NAME` | `HTE Remote` | Page titles, mail From name and subjects |
 | `HTE_SIGNIN_DOMAIN` | empty | E-mail domain named on the sign-in page |
-| `TRUSTED_PROXIES` | private ranges | Proxies whose `X-Forwarded-*` headers are believed |
+| `TRUSTED_PROXIES` | none for `hbbs`/`hbbr` (the console: private ranges) | Proxies whose `X-Forwarded-For` is believed (`hbbs`/`hbbr`: on the WebSocket ports only; `X-Real-IP` is not read). Set it to the reverse proxy's address, or every web-client user shows the proxy's address and shares its rate limits and block lists |
 | `HTE_REMOTE_ID_SERVER` | `<APP_URL host>:21116` | ID server address given to clients |
 | `HTE_REMOTE_RELAY_SERVER` | `<APP_URL host>:21117` | Relay address `hbbs` hands out |
 | `HTE_REMOTE_SERVER_SECRET` | `/data/.server_secret` | Secret `hbbs` and the console share (generated once when missing) |

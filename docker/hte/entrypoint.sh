@@ -52,6 +52,14 @@ for _old in $(env | sed -n 's/^\(CORTENDESK_[A-Za-z0-9_]*\)=.*/\1/p'); do
 done
 unset _old _new _nv _ov
 
+# --- the reverse proxy in front of the WebSocket ports -------------------------
+# hbbs and hbbr (1.3.0) believe X-Forwarded-For on /ws/id and /ws/relay only from a proxy listed in TRUSTED_PROXIES (comma-separated
+# CIDRs, the proxy's address as this container sees it). Unset, every web client looks like the proxy: one rate limit and one block
+# list for all of them. The console reads the same variable (its own default, the private ranges, applies when unset).
+if [ -z "${TRUSTED_PROXIES:-}" ]; then
+    log "WARNING: TRUSTED_PROXIES is not set: web clients arriving through the reverse proxy all show the proxy's address to hbbs and hbbr. Set it to the proxy's address (README)."
+fi
+
 # --- log levels --------------------------------------------------------------
 # HTE_REMOTE_LOG_LEVEL (CORTENDESK_LOG_LEVEL in the CortenDesk image, its one knob) sets hbbs and hbbr; the console has its own, HTE_CONSOLE_LOG, because the
 # checklists read its info lines (sign-ins, jobs) while hbbs may run at warn. hbbs and hbbr only know off, error,
