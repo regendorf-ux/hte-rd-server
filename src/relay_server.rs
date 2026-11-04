@@ -1,3 +1,8 @@
+// Modified by the CortenDesk Server project on 2026-11-03: client address from
+// trusted proxies and a WebSocket handshake timeout; relay session reports. See
+// CHANGES.md. This file is part of a modified version of rustdesk-server,
+// distributed under the AGPL-3.0 like the original.
+
 use async_speed_limit::Limiter;
 use async_trait::async_trait;
 use hbb_common::{
@@ -30,8 +35,18 @@ use std::{
 
 type Usage = (usize, usize, usize, usize);
 
+/// The first side of a pair, held until the other arrives. Its request is
+/// kept too: only the controller's names the device and the connection type,
+/// and either side may come first (issue #130).
+struct Waiting {
+    stream: Box<dyn StreamTrait>,
+    id: String,
+    conn_type: i32,
+    addr: SocketAddr,
+}
+
 lazy_static::lazy_static! {
-    static ref PEERS: Mutex<HashMap<String, Box<dyn StreamTrait>>> = Default::default();
+    static ref PEERS: Mutex<HashMap<String, Waiting>> = Default::default();
     static ref USAGE: RwLock<HashMap<String, Usage>> = Default::default();
     static ref BLACKLIST: RwLock<HashSet<String>> = Default::default();
     static ref BLOCKLIST: RwLock<HashSet<String>> = Default::default();
@@ -99,6 +114,7 @@ pub async fn start_with_bind(
             .await;
         }
     };
+    crate::relay_report::start();
     let listen_signal = crate::common::listen_signal();
     tokio::select!(
         res = main_task => res,
@@ -428,30 +444,16 @@ async fn make_pair(
     if ws {
         use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
         let callback = |req: &Request, response: Response| {
-            let headers = req.headers();
-            // X-Real-IP / X-Forwarded-For are trusted as-is so that the real
-            // client IP is preserved when the WebSocket port runs behind a
-            // reverse proxy (WSS). They are NOT validated: anyone who can reach
-            // this port directly can spoof an arbitrary IP, bypassing IP-based
-            // rate limiting / blocking and corrupting logged IPs. Do not expose
-            // the WebSocket port directly to untrusted networks; only the
-            // reverse proxy, which overwrites these headers, should be able to
-            // connect to it.
-            // https://github.com/rustdesk/rustdesk-server/issues/634
-            let real_ip = headers
-                .get("X-Real-IP")
-                .or_else(|| headers.get("X-Forwarded-For"))
-                .and_then(|header_value| header_value.to_str().ok());
-            if let Some(ip) = real_ip {
-                if ip.contains('.') {
-                    addr = format!("{ip}:0").parse().unwrap_or(addr);
-                } else {
-                    addr = format!("[{ip}]:0").parse().unwrap_or(addr);
-                }
-            }
+            // The client address, when a trusted reverse proxy names it in
+            // X-Forwarded-For; otherwise the TCP peer. Keeps the peer's port.
+            addr.set_ip(crate::common::client_ip(addr.ip(), req.headers()));
             Ok(response)
         };
-        let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
+        let ws_stream = timeout(5_000, tokio_tungstenite::accept_hdr_async(stream, callback)).await??;
+        if BLOCKLIST.read().await.get(&addr.ip().to_string()).is_some() {
+            log::info!("{} blocked", addr.ip());
+            return Ok(());
+        }
         make_pair_(ws_stream, addr, key, limiter).await;
     } else {
         make_pair_(FramedStream::from(stream, addr), addr, key, limiter).await;
@@ -469,10 +471,16 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                     return;
                 }
                 if !rf.uuid.is_empty() {
-                    let mut peer = PEERS.lock().await.remove(&rf.uuid);
-                    if let Some(peer) = peer.as_mut() {
+                    let mut waiting = PEERS.lock().await.remove(&rf.uuid);
+                    if let Some(waiting) = waiting.as_mut() {
                         if !crate::hte_relay_gate::admitted(&rf.uuid).await { log::warn!("Relay gate: refused {} from {}: not admitted by hbbs", rf.uuid, addr); return; } // HTE
                         log::info!("Relayrequest {} from {} got paired", rf.uuid, addr);
+                        let report = crate::relay_report::opened(
+                            &rf.uuid,
+                            (&rf.id, rf.conn_type.value(), addr),
+                            (&waiting.id, waiting.conn_type, waiting.addr),
+                        );
+                        let peer = &mut waiting.stream;
                         let id = format!("{}:{}", addr.ip(), addr.port());
                         USAGE.write().await.insert(id.clone(), Default::default());
                         if !stream.is_ws() && !peer.is_ws() {
@@ -480,16 +488,29 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                             stream.set_raw();
                             log::info!("Both are raw");
                         }
-                        if let Err(err) = relay(addr, &mut stream, peer, limiter, id.clone()).await
+                        let mut carried = 0;
+                        if let Err(err) =
+                            relay(addr, &mut stream, peer, limiter, id.clone(), &mut carried).await
                         {
                             log::info!("Relay of {} closed: {}", addr, err);
                         } else {
                             log::info!("Relay of {} closed", addr);
                         }
                         USAGE.write().await.remove(&id);
+                        if let Some(report) = report {
+                            crate::relay_report::closed(report, carried);
+                        }
                     } else {
                         log::info!("New relay request {} from {}", rf.uuid, addr);
-                        PEERS.lock().await.insert(rf.uuid.clone(), Box::new(stream));
+                        PEERS.lock().await.insert(
+                            rf.uuid.clone(),
+                            Waiting {
+                                stream: Box::new(stream),
+                                id: rf.id.clone(),
+                                conn_type: rf.conn_type.value(),
+                                addr,
+                            },
+                        );
                         sleep(30.).await;
                         PEERS.lock().await.remove(&rf.uuid);
                     }
@@ -505,6 +526,7 @@ async fn relay(
     peer: &mut Box<dyn StreamTrait>,
     total_limiter: Limiter,
     id: String,
+    carried: &mut usize,
 ) -> ResultType<()> {
     let ip = addr.ip().to_string();
     let mut tm = std::time::Instant::now();
@@ -535,6 +557,7 @@ async fn relay(
                     total_limiter.consume(nb).await;
                     total += nb;
                     total_s += nb;
+                    *carried += bytes.len();
                     if !bytes.is_empty() {
                         stream.send_raw(bytes.into()).await?;
                     }
@@ -554,6 +577,7 @@ async fn relay(
                     total_limiter.consume(nb).await;
                     total += nb;
                     total_s += nb;
+                    *carried += bytes.len();
                     if !bytes.is_empty() {
                         peer.send_raw(bytes.into()).await?;
                     }

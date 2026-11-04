@@ -147,7 +147,14 @@ pub async fn target_answers(pm: &crate::peer::PeerMap, id: &str, from: IpAddr) -
         return false;
     }
     let Some(peer) = pm.get_in_memory(id).await else { return false };
-    let registered = peer.read().await.socket_addr.ip();
+    // A device registered over TCP or WebSocket (1.3.0) is known by its stream's client address.
+    let registered = {
+        let peer = peer.read().await;
+        match peer.stream.as_ref().filter(|s| s.alive()) {
+            Some(stream) => stream.connection.addr.ip(),
+            None => peer.socket_addr.ip(),
+        }
+    };
     norm(registered) == norm(from)
 }
 

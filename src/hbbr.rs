@@ -1,6 +1,7 @@
 use clap::App;
 mod common;
 mod hte_relay_gate; // HTE
+mod relay_report;
 mod relay_server;
 use flexi_logger::*;
 use hbb_common::{config::RELAY_PORT, ResultType};
@@ -16,6 +17,7 @@ fn main() -> ResultType<()> {
     let args = format!(
         "-b, --bind=[IP] 'Sets the IP address to bind to (default: all interfaces)'
         -p, --port=[NUMBER(default={RELAY_PORT})] 'Sets the listening port'
+        , --trusted-proxies=[CIDRS] 'Comma-separated CIDRs of reverse proxies whose X-Forwarded-For is used (default: none)'
         -k, --key=[KEY] 'Only allow the client with the same key'
         ",
     );
@@ -30,6 +32,10 @@ fn main() -> ResultType<()> {
             section.iter().for_each(|(k, v)| common::set_arg(k, v));
         }
     }
+    if let Some(proxies) = matches.value_of("trusted-proxies") {
+        common::set_arg("TRUSTED-PROXIES", proxies);
+    }
+    common::init_trusted_proxies()?;
     let mut port = RELAY_PORT;
     if let Some(v) = common::get_arg_opt("PORT") {
         let v: i32 = v.parse().unwrap_or_default();

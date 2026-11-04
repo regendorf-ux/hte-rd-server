@@ -4,7 +4,7 @@
 //! refusal, the device hears nothing, and the connection that was refused
 //! cannot trickle candidates to anyone; a route opens only for an admitted
 //! offer and reaches only the device offered to; signalling is off unless
-//! `HTE_REMOTE_WEBRTC` says on; and behind a proxy (X-Real-IP) every
+//! `HTE_REMOTE_WEBRTC` says on; and behind a proxy (X-Forwarded-For from a trusted proxy) every
 //! connection keeps its own reply route. Controllers connect over WebSocket,
 //! as the console's web client does, so the tests need no second loopback
 //! address. The helpers mirror hte_scope.rs.
@@ -129,6 +129,7 @@ fn spawn_hbbs(dir: &std::path::Path, port: i32, console: &str, webrtc: bool) -> 
     cmd.current_dir(dir)
         .args(["-p", &port.to_string(), "-k", "_"])
         .env("TEST_HBBS", "no")
+        .env("TRUSTED_PROXIES", "127.0.0.1/32")
         .env("CORTENDESK_CONSOLE_URL", console)
         .env("CORTENDESK_SERVER_SECRET", SECRET)
         .env("CORTENDESK_POLICY_INTERVAL", "1")
@@ -272,7 +273,7 @@ use tokio_tungstenite::{
 type Ws = WebSocketStream<TcpStream>;
 
 /// A browser's connection through a proxy: the TCP peer is loopback, the
-/// address hbbs works with comes from X-Real-IP plus this connection's port.
+/// address hbbs works with comes from X-Forwarded-For (127.0.0.1 is the trusted proxy) plus this connection's port.
 struct Web {
     ws: Ws,
     /// The address hbbs keys this connection by (what the device sees).
@@ -287,7 +288,7 @@ impl Web {
                 Ok(tcp) => {
                     let local = tcp.local_addr().unwrap();
                     let mut req = format!("ws://127.0.0.1:{}", port + 2).into_client_request().unwrap();
-                    req.headers_mut().insert("X-Real-IP", real_ip.parse().unwrap());
+                    req.headers_mut().insert("X-Forwarded-For", real_ip.parse().unwrap());
                     let (ws, _) = client_async(req, tcp).await.expect("websocket upgrade");
                     return Web { ws, keyed_as: format!("{real_ip}:{}", local.port()) };
                 }
