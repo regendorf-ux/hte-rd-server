@@ -41,6 +41,7 @@ pub mod pagereplay;
 pub mod pages;
 pub mod passwords;
 pub mod path;
+pub mod release_id;
 pub mod passwords_sweep;
 pub mod php;
 pub mod proxy;

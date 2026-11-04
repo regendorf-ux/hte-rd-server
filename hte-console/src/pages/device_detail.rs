@@ -486,6 +486,19 @@ pub fn act(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
             audit(ctx, c, "hte.password", &format!("New password for {rid} (by hand)"), Some("device"), Some(&rid))?;
             Ok(back)
         }
+        "release-id" => {
+            if !ctx.allows("device", "rw") {
+                return Ok(abort(403));
+            }
+            let addr = crate::release_id::address();
+            let (ok, message) = match crate::release_id::release(&addr, &rid) {
+                Ok(m) => (true, m),
+                Err(m) => (false, m),
+            };
+            audit(ctx, c, "hte.release_id", &format!("Release ID {rid}: {}", if ok { "done" } else { "refused" }), Some("device"), Some(&rid))?;
+            ctx.flash("duplicate_result", Value::String(message));
+            Ok(back)
+        }
         _ => Ok(back),
     }
 }

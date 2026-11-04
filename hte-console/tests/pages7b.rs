@@ -390,6 +390,12 @@ async fn the_device_page() {
     let r = h.post_form("/devices/1/do", &cookie, &[tok(), ("do", "rotate-password")]).await;
     assert_eq!(r.status, 302);
     assert_eq!(h.count("hte_device_passwords where rustdesk_id = '1001'"), 1);
+    // Release ID: refused with nothing listening, audited either way; the button is on the page
+    std::env::set_var("HTE_CONSOLE_HBBS_ADMIN", "127.0.0.1:1");
+    assert!(squash(&h.get("/devices/1", &cookie).await.body).contains("Release ID"));
+    let r = h.post_form("/devices/1/do", &cookie, &[tok(), ("do", "release-id")]).await;
+    assert_eq!(r.status, 302, "{}", r.body);
+    assert_eq!(h.count("console_audits where action = 'hte.release_id' and summary = 'Release ID 1001: refused'"), 1);
     // a person who may not write cannot
     let erin = h.login(&sid("deverin"), 3, json!({}));
     assert_eq!(h.get("/devices", &erin).await.status, 302);

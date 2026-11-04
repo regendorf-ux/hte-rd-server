@@ -143,6 +143,15 @@
                         </div>
                         <div class="rd-def"><dt>Strategy</dt><dd>{{ d.strategy or '—' }}</dd></div>
                     </dl>
+                    {% if can_edit and not d.trashed %}
+                        <form method="post" action="{{ url }}/do" class="mt-2">
+                            <input type="hidden" name="_token" value="{{ csrf }}" autocomplete="off">
+                            <input type="hidden" name="do" value="release-id">
+                            <button type="submit" class="btn btn-sm btn-outline-light"
+                                    title="Makes the ID server forget this device so another machine can register under {{ d.rustdesk_id }}."
+                                    data-rd-confirm="Release ID {{ d.rustdesk_id }}? Another machine can then take it.">Release ID</button>
+                        </form>
+                    {% endif %}
                 </div>
             </div>
 
