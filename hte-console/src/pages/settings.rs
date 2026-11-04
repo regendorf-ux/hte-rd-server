@@ -52,7 +52,7 @@ const STRINGS: &[&str] = &[
     "apprise_offline_grace_minutes", "hte_password_days", "web_client_ice_servers",
 ];
 const BOOLS: &[&str] = &[
-    "downloads_on_login", "require_device_approval", "auto_approve_signed_in", "server_ip_match", "hte_scope_enforce", "hte_passwords", "two_factor_required", "two_factor_required_admins",
+    "downloads_on_login", "require_device_approval", "auto_approve_signed_in", "new_devices_incoming_only", "server_ip_match", "hte_scope_enforce", "hte_passwords", "two_factor_required", "two_factor_required_admins",
     "web_client_webrtc", "email_login_verification", "oidc_enabled", "oidc_default_admin", "oidc_require_verified_email", "oidc_logout_enabled", "oidc_disable_local_login", "smtp_enabled", "apprise_enabled",
 ];
 /// Write-only inputs: read from a post, never from the database, never given back.
@@ -127,6 +127,7 @@ fn load(ctx: &Ctx, c: &Connection) -> Result<(Values, Vec<(String, String)>), Fa
     s(&mut v, "log_retention_days", int_of(&txt(c, "log_retention_days", &env_or("HTE_REMOTE_LOG_RETENTION_DAYS", "365"))?).to_string());
     b(&mut v, "require_device_approval", on(c, "require_device_approval")?);
     b(&mut v, "auto_approve_signed_in", on(c, "auto_approve_signed_in")?);
+    b(&mut v, "new_devices_incoming_only", on(c, "new_devices_incoming_only")?);
     let default_group = int_of(&txt(c, "default_device_group_id", "0")?);
     let default_group = if default_group > 0 && find(c, "device_groups", default_group)?.is_some() { default_group } else { 0 };
     s(&mut v, "default_device_group_id", default_group.to_string());
@@ -792,6 +793,7 @@ pub fn save(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         now_s("log_retention_days", &int_of(&vs(&v, "log_retention_days")).to_string())?;
         now_s("require_device_approval", bool_s(vb(&v, "require_device_approval")))?;
         now_s("auto_approve_signed_in", bool_s(vb(&v, "auto_approve_signed_in")))?;
+        now_s("new_devices_incoming_only", bool_s(vb(&v, "new_devices_incoming_only")))?;
         now_s("default_device_group_id", &group.to_string())?;
         let mode = vs(&v, "server_access_mode");
         if mode != server_mode(c)? {

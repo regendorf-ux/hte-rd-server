@@ -509,6 +509,9 @@ pub fn signed_in(c: &Connection, user: &Row, id: &Val, uuid: &Val, os: &Val, ip:
                 ("user_id", user.val("id")),
                 ("registered_ip", ip.map_or(Val::Null, Val::str)),
             ];
+            if Val::Str(db::setting(c, "new_devices_incoming_only", "0")?).to_bool() {
+                cols.push(("can_initiate", Val::Bool(false)));
+            }
             let group_id = Val::Str(db::setting(c, "default_device_group_id", "0")?).to_int();
             if group_id > 0 {
                 if let Some(g) = db::first(c, r#"select * from "device_groups" where "device_groups"."id" = ? limit 1"#, &[P(Val::Int(group_id))])? {

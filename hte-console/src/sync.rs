@@ -221,6 +221,9 @@ fn create_device(c: &Connection, id: &[u8], attrs: Vec<(&str, Val, Cast)>, ip: &
     cols.extend(attrs.into_iter().map(|(k, v, _)| (k, v)));
     cols.push(("status", Val::str(if gate { "pending" } else { "active" })));
     cols.push(("registered_ip", Val::str(ip)));
+    if Val::Str(db::setting(c, "new_devices_incoming_only", "0")?).to_bool() {
+        cols.push(("can_initiate", Val::Bool(false)));
+    }
     // DeviceEnrollment::defaultsForNew
     let group_id = Val::Str(db::setting(c, "default_device_group_id", "0")?).to_int();
     if group_id > 0 {

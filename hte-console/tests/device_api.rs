@@ -322,6 +322,17 @@ async fn sysinfo_new_device_approval_gate_group_and_strategy() {
     assert_eq!(row, ("active".into(), 5, 2));
 }
 
+#[tokio::test]
+async fn sysinfo_new_devices_incoming_only_leaves_known_devices_alone() {
+    let h = harness().await;
+    h.post("/api/sysinfo", json!({"id": "990000001", "uuid": UUID, "hostname": "old"})).await;
+    h.sql("insert into settings (key, value) values ('new_devices_incoming_only', '1')");
+    h.post("/api/sysinfo", json!({"id": "990000002", "uuid": UUID, "hostname": "new"})).await;
+    h.post("/api/sysinfo", json!({"id": "990000001", "uuid": UUID, "hostname": "old2"})).await;
+    assert_eq!(h.one::<i64>("select can_initiate from devices where rustdesk_id = '990000001'"), 1);
+    assert_eq!(h.one::<i64>("select can_initiate from devices where rustdesk_id = '990000002'"), 0);
+}
+
 // ------------------------------------------------------------------------------------------------ audit ---
 
 #[tokio::test]

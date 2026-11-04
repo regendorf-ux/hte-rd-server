@@ -107,6 +107,13 @@
                         <div class="form-text">With the gate on, a pending device whose RustDesk client is signed in to this console with a user account is approved on arrival, and that user becomes its owner. Works in either order: device first or sign-in first.</div>
                     </div>
                     <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="newDevicesIncomingOnly" name="new_devices_incoming_only" value="1"{{ ' checked' if v.new_devices_incoming_only else '' }}>
+                            <label class="form-check-label" for="newDevicesIncomingOnly">New devices are incoming only</label>
+                        </div>
+                        <div class="form-text">A device seen for the first time can be reached but cannot start sessions until an operator allows it on its page. Devices already known are not changed.</div>
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label" for="defaultDeviceGroupId">Default group for new devices</label>
                         <select id="defaultDeviceGroupId" name="default_device_group_id" class="form-select{{ ' is-invalid' if e.default_device_group_id else '' }}" style="max-width: 320px;">
                             <option value="0">None</option>
