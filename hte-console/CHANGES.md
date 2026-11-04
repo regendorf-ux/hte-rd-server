@@ -15,6 +15,11 @@ New HTE code (AGPL-3.0), not a change to upstream. The fork-level statement is `
 - Schema: one more own migration (`2026_11_04_900001_create_relay_sessions_and_connection_paths`): the table `relay_sessions` and two nullable columns on
   `audit_connections` (`path`, `relay_session_id`). Old rows are left as they are; the previous console ignores the columns, so the image before this one
   still runs on the migrated database. `relay_sessions` is pruned with the other logs.
+- **Release ID** on the device page (people who may write devices): asks `hbbs`, on its loopback admin port (`127.0.0.1:21115`, `HTE_CONSOLE_HBBS_ADMIN`
+  to change), to forget the device so another machine can register under that ID (`release-id <id>`, `hbbs` 1.4.0). A confirmation first; the result
+  is shown on the page and logged in the audit (`hte.release_id`). A device that is online and still running may register again at once.
+- **New devices incoming only** (Settings, next to the approval gate; CortenDesk console 1.16.0): a device seen for the first time can be reached but
+  cannot start sessions until it is allowed on its page. Devices already known are not changed.
 - `rusqlite` 0.32 (was 0.27): `hbbs` moved to sqlx 0.8, and the two must link the same `libsqlite3-sys` 0.30.
 
 ## 2.2.0 (2026-11-02): the web client of CortenDesk 1.18 (Terminal, 30 fps, keyboards, 2FA, WebRTC)
