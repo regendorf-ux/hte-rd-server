@@ -651,6 +651,24 @@ pub fn index(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         }
         let Some(s) = active(c, qint(req, "edit"))? else { return Ok(abort(404)) };
         View::Editor { form: Form::of_strategy(&s), errors: Map::new() }
+    } else if qint(req, "duplicate") > 0 {
+        // a new strategy that starts as a copy of this one (CortenDesk 1.23.0); nothing is saved until the editor is
+        if !rw {
+            return Ok(abort(403));
+        }
+        let Some(source) = active(c, qint(req, "duplicate"))? else { return Ok(abort(404)) };
+        let mut form = Form::of_strategy(&source);
+        form.id = 0;
+        form.is_default = false;
+        let base = format!("Copy of {}", form.name);
+        let mut name = base.clone();
+        let mut n = 2;
+        while db::first(c, r#"select 1 as one from "strategies" where "name" = ? and "deleted_at" is null limit 1"#, &[P(Val::str(&name))])?.is_some() {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        form.name = name.chars().take(255).collect();
+        View::Editor { form, errors: Map::new() }
     } else if qint(req, "delete") > 0 {
         if !rw {
             return Ok(abort(403));

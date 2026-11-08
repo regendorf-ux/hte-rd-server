@@ -59,7 +59,7 @@
                             <hr class="my-3">
                             <label class="form-label" for="dl-strategy">Strategy</label>
                             <select id="dl-strategy" class="form-select" name="strategy_id">
-                                <option value="0">Inherit (owner, group, or default)</option>
+                                <option value="0">Inherit (owner, group, or default){% if modal.explain.inherits %}: {{ modal.explain.inherits }}{% endif %}</option>
                                 {% for s in modal.strategies %}
                                     <option value="{{ s.id }}"{{ ' selected' if modal.values.strategy == s.id else '' }}>
                                         {{ s.name }}{% if not s.enabled %} (disabled){% endif %}

@@ -426,8 +426,11 @@ pub fn explain_for(c: &Connection, d: &Row, now: i64) -> Result<Value, Fault> {
     };
     steps.push(json!({"label": "Default strategy", "target": "", "state": dstate, "name": default.as_ref().map(|r| s(r, "name")).unwrap_or_default()}));
     let resolved = if d.is_null("strategy_id_resolved") { None } else { live(d.val("strategy_id_resolved").to_int())? };
+    // what "Inherit" would give (CortenDesk 1.22.0): the first enabled strategy below the device's own level
+    let inherits = steps.iter().skip(1).find(|st| matches!(st["state"].as_str(), Some("applied" | "overridden"))).and_then(|st| st["name"].as_str().map(str::to_string));
     Ok(json!({
         "steps": steps,
+        "inherits": inherits,
         "resolved": resolved.as_ref().map(|r| s(r, "name")),
         "acked": human(d, "strategy_acked_at", now, false),
     }))

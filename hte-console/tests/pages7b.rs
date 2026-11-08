@@ -646,6 +646,15 @@ async fn the_strategies_page() {
     assert_eq!(h.count("console_audits where action = 'strategy.create'"), 1);
     assert_eq!(h.count("devices where strategy_id_resolved is not null and deleted_at is null and status = 'active'"), h.count("devices where deleted_at is null and status = 'active'"));
     let id = h.text("select cast(id as text) from strategies where name = 'Lock'");
+    // Edit device: "Inherit" names the strategy the device would get (CortenDesk 1.22.0)
+    let r = h.get("/devices?edit=1", &cookie).await;
+    assert!(squash(&r.body).contains("Inherit (owner, group, or default): Lock"), "{}", squash(&r.body));
+    // Duplicate (CortenDesk 1.23.0): the editor opens on a new strategy that starts as a copy; nothing is saved until it is
+    let r = h.get(&format!("/strategies?duplicate={id}"), &cookie).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert!(squash(&r.body).contains("Add Strategy") && r.body.contains("Copy of Lock") && r.body.contains("opt_access-mode"));
+    assert_eq!(h.count("strategies"), 1);
+    assert_eq!(h.get("/strategies?duplicate=9999", &cookie).await.status, 404);
     // toggle
     h.post_form("/strategies/toggle", &cookie, &[tok(), ("id", &id)]).await;
     assert_eq!(h.count("strategies where enabled = 0"), 1);
@@ -676,6 +685,7 @@ async fn the_strategies_page() {
     // a person without the strategy permission is turned away
     let viewer = h.login(&sid("st2"), 3, json!({}));
     assert_ne!(h.get("/strategies?create=1", &viewer).await.status, 200);
+    assert_ne!(h.get(&format!("/strategies?duplicate={id}"), &viewer).await.status, 200);
 }
 
 #[tokio::test]

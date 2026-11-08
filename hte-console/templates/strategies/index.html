@@ -46,6 +46,7 @@
                         {% if is_admin %}<a href="/strategies?compliance={{ s.id }}" class="rd-act me-2">Compliance</a>{% endif %}
                         <a href="/strategies?assign={{ s.id }}" class="rd-act me-2">Assign</a>
                         <a href="/strategies?edit={{ s.id }}" class="rd-act me-2">Edit</a>
+                        <a href="/strategies?duplicate={{ s.id }}" class="rd-act me-2">Duplicate</a>
                         <a href="/strategies?delete={{ s.id }}" class="text-danger">Delete</a>
                     </td>
                 </tr>
@@ -94,6 +95,7 @@
                         {% if is_admin %}<a href="/strategies?compliance={{ s.id }}" class="rd-iconbtn" title="Compliance"><i class="ri-pulse-line"></i></a>{% endif %}
                         <a href="/strategies?assign={{ s.id }}" class="rd-iconbtn" title="Assign"><i class="ri-links-line"></i></a>
                         <a href="/strategies?edit={{ s.id }}" class="rd-iconbtn" title="Edit"><i class="ri-pencil-line"></i></a>
+                        <a href="/strategies?duplicate={{ s.id }}" class="rd-iconbtn" title="Duplicate"><i class="ri-file-copy-line"></i></a>
                         <a href="/strategies?delete={{ s.id }}" class="rd-iconbtn text-danger" title="Delete"><i class="ri-delete-bin-line"></i></a>
                     </div>
                 </div>
