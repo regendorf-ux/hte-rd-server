@@ -2,8 +2,16 @@
 <html lang="en" data-bs-theme="{{ 'light' if theme == 'light' else 'dark' }}" data-rd-theme-pref="{{ theme }}">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <title>{{ title }}</title>
+    {# Add to Home Screen: a full-screen app on iPhone (no fullscreen API there) and Android. No start_url in the manifest: it opens the page it was added from (device included). #}
+    <link rel="manifest" href="/rdclient/manifest.webmanifest">
+    <meta name="theme-color" content="#000000">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="HTE Remote">
+    <link rel="apple-touch-icon" href="/rdclient/logo.png">
     <link rel="shortcut icon" type="image/png" href="/assets/images/hte-remote.png?v={{ app_version }}">
     <script src="/assets/js/theme-init.js?v={{ app_version }}"></script>
     <link rel="stylesheet" href="/assets/vendor/remixicon/remixicon.css?v={{ app_version }}">
@@ -11,7 +19,7 @@
     <link rel="stylesheet" href="/assets/css/hte-brand.css?v={{ app_version }}">
     <link rel="stylesheet" href="/assets/css/hte-webclient.css?v={{ app_version }}">
     <style>
-        html, body { height: 100%; margin: 0; overflow: hidden; background: #000; }
+        html, body { height: 100%; margin: 0; overflow: hidden; background: #000; overscroll-behavior: none; }
         #rd-root { height: 100vh; height: 100dvh; }
     </style>
 </head>

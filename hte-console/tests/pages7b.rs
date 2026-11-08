@@ -904,6 +904,9 @@ async fn the_web_client() {
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(r.body.contains("<title>1001 — HTE Remote Web Client</title>") && r.body.contains("hte-remote.png"), "{}", r.body);
     assert!(!r.body.contains("CortenDesk") && !r.body.contains("cortendesk-sm"));
+    // phone and tablet: the keyboard resizes the page, Add to Home Screen has its manifest and icon
+    assert!(r.body.contains("interactive-widget=resizes-content") && r.body.contains(r#"rel="manifest" href="/rdclient/manifest.webmanifest""#) && r.body.contains(r#"rel="apple-touch-icon" href="/rdclient/logo.png""#));
+    assert!(r.body.contains(r#"name="apple-mobile-web-app-title" content="HTE Remote""#));
     assert!(r.body.contains("/rdclient/app.js?v=") && r.body.contains("hte-brand.css") && r.body.contains("hte-webclient.js"));
     assert!(!r.body.contains("Zq7-managed-PASSWORD"));
     let cfg = r.body.split("data-config=\"").nth(1).unwrap().split('"').next().unwrap().replace("&quot;", "\"").replace("&#039;", "'").replace("&amp;", "&");
