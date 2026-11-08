@@ -169,7 +169,7 @@ pub fn create(ctx: &Ctx, c: &Connection, device: &Row, body: &Form, url: &str) -
     let back = |msg: &str| {
         ctx.flash("share_error", Value::String(msg.to_string()));
         ctx.flash("share_form", json!({"label": body.get("label"), "duration": body.get("duration"), "viewers": body.get("viewers")}));
-        Reply::Redirect(format!("{url}#share"))
+        Reply::Redirect(format!("{url}?tab=details#share"))
     };
     if !enabled(c)? {
         return Ok(abort(404));
@@ -208,7 +208,7 @@ pub fn create(ctx: &Ctx, c: &Connection, device: &Row, body: &Form, url: &str) -
     )?;
     audit(ctx, c, "device.share.create", &format!("Created share link \"{label}\" for device {rid} (up to {viewers} at a time, {key})"), Some("device"), Some(&rid))?;
     ctx.flash("share_link", Value::String(format!("{}/s#{token}", ctx.root.trim_end_matches('/'))));
-    Ok(Reply::Redirect(format!("{url}#share")))
+    Ok(Reply::Redirect(format!("{url}?tab=details#share")))
 }
 
 /// `do=share-end`: the creator or an administrator. Takes effect at the ID server on its next policy pull (a few seconds).
@@ -224,7 +224,7 @@ pub fn end(ctx: &Ctx, c: &Connection, device: &Row, body: &Form, url: &str) -> R
         let rid = text(device, "rustdesk_id");
         audit(ctx, c, "device.share.revoke", &format!("Ended share link \"{}\" for device {rid}", text(&share, "label")), Some("device"), Some(&rid))?;
     }
-    Ok(Reply::Redirect(format!("{url}#share")))
+    Ok(Reply::Redirect(format!("{url}?tab=details#share")))
 }
 
 // ---------------------------------------------------------------------------------------------- the public pages ---

@@ -105,8 +105,172 @@
         <div class="fs-13 text-success mb-3"><i class="ri-check-line me-1"></i>{{ duplicate_result }}</div>
     {% endif %}
 
+    {# ---- tabs ---- #}
+    <div class="rd-dd-tabs">
+        <ul class="nav nav-tabs nav-bordered">
+            {% for t in tab_names %}{% if can_audit or t[0] in ['overview', 'details'] %}
+                <li class="nav-item"><a href="{{ url }}?tab={{ t[0] }}" class="nav-link{{ ' active' if tab == t[0] else '' }}"{% if tab == t[0] %} aria-current="page"{% endif %}><i class="{{ t[1] }} me-1"></i>{{ t[2] }}</a></li>
+            {% endif %}{% endfor %}
+        </ul>
+        <span class="rd-dd-seen"><i class="ri-time-line me-1"></i>{{ last_seen_line }}</span>
+    </div>
+
+    {% if tab == 'overview' %}
+    <div class="row g-3 rd-row-equal">
+        <div class="col-xl-5"><div class="card h-100"><div class="card-header"><h5 class="card-title mb-0">Hardware snapshot</h5></div><div class="card-body">
+            <div class="rd-hw">
+                <div class="rd-hw-stage" aria-hidden="true"><i class="{{ d.platform.icon }} {{ d.platform.color }}"></i></div>
+                <div class="rd-hw-grid">
+                    <div class="rd-hw-tile"><i class="ri-cpu-line"></i><span class="rd-hw-value" title="{{ d.cpu }}">{{ d.cpu or '—' }}</span><span class="rd-hw-label">CPU</span></div>
+                    <div class="rd-hw-tile"><i class="ri-ram-2-line"></i><span class="rd-hw-value">{{ d.memory or '—' }}</span><span class="rd-hw-label">Memory</span></div>
+                    <div class="rd-hw-tile"><i class="ri-macbook-line"></i><span class="rd-hw-value" title="{{ d.os }}">{{ d.os_desc }}</span><span class="rd-hw-label">Operating system</span></div>
+                    <div class="rd-hw-tile"><i class="ri-links-line"></i><span class="rd-hw-value">{{ d.version or '—' }}</span><span class="rd-hw-label">RustDesk version</span></div>
+                </div>
+            </div>
+        </div></div></div>
+        <div class="col-xl-7"><div class="card h-100"><div class="card-header"><h5 class="card-title mb-0">Recent connections</h5></div><div class="card-body">
+            {% if not can_audit %}
+                <p class="text-muted mb-0">Activity history needs the audit permission.</p>
+            {% elif flow.empty %}
+                <p class="text-muted mb-0">No connections recorded.</p>
+            {% else %}
+                <div class="rd-flow">
+                    <div class="rd-flow-col">{% for n in flow.in %}<div class="rd-flow-node"><i class="ri-user-3-line"></i><span class="text-truncate">{{ n.name }}</span><b>{{ n.count }}</b></div>{% endfor %}{% if flow.in_more %}<div class="rd-flow-node text-muted">+{{ flow.in_more }} more</div>{% endif %}</div>
+                    <div class="rd-flow-line"></div>
+                    <div class="rd-flow-self"><i class="{{ d.platform.icon }} {{ d.platform.color }} fs-20"></i><span class="text-truncate">{{ d.title }}</span></div>
+                    <div class="rd-flow-line rd-flow-line-out"></div>
+                    <div class="rd-flow-col">{% for n in flow.out %}<div class="rd-flow-node"><i class="ri-computer-line"></i><span class="text-truncate">{{ n.name }}</span><b>{{ n.count }}</b></div>{% endfor %}{% if flow.out_more %}<div class="rd-flow-node text-muted">+{{ flow.out_more }} more</div>{% endif %}</div>
+                </div>
+                <div class="rd-flow-split"><span style="width: {{ flow.in_pct }}%"></span><span style="width: {{ 100 - flow.in_pct }}%"></span></div>
+                <div class="d-flex gap-3 fs-13"><span class="rd-flow-key-in">{{ flow.in_count }} incoming</span><span class="rd-flow-key-out">{{ flow.out_count }} outgoing</span><a href="{{ url }}?tab=connections" class="ms-auto">View log &rsaquo;</a></div>
+            {% endif %}
+        </div></div></div>
+    </div>
+    {% if strip %}
+        <div class="card"><div class="card-header"><h5 class="card-title mb-0">Activity</h5></div><div class="rd-dd-strip">
+            {% for it in strip %}<a href="{{ url }}?tab={{ it.tab }}" class="rd-dd-strip-item text-reset"><i class="{{ it.icon }}"></i><span><span class="fw-semibold">{{ it.label }}</span><small>{{ it.sub }}</small></span></a>{% endfor %}
+        </div></div>
+    {% endif %}
     <div class="row g-3">
-        <div class="col-lg-5">
+        <div class="col-md-4"><a href="{{ url }}?tab=details#address-books" class="card rd-dd-tile text-reset"><i class="ri-contacts-book-2-line"></i><span class="fw-semibold">Address books</span><span class="badge bg-secondary-subtle text-secondary ms-auto">{{ books|length }}</span></a></div>
+        <div class="col-md-4"><a href="{{ url }}?tab=details{{ '&note=1' if can_edit else '' }}" class="card rd-dd-tile text-reset"><i class="ri-pencil-line"></i><span class="fw-semibold">Note</span><span class="text-muted text-truncate ms-2 fs-13">{{ d.note }}</span><span class="text-muted ms-auto fs-13">{{ ('Edit' if d.note else 'Add note') if can_edit else '' }}</span></a></div>
+        {% if shares %}<div class="col-md-4"><a href="{{ url }}?tab=details&share=1#share" class="card rd-dd-tile text-reset"><i class="ri-share-forward-line"></i><span class="fw-semibold">Share screen</span><span class="text-muted ms-auto fs-13">{{ 'New link' if shares.can_create else '' }}</span></a></div>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if tab == 'connections' and can_audit %}
+        <div class="row g-3"><div class="col-lg-9">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">Recent connections</h5>
+                        <a href="/logs/connections?search={{ d.rustdesk_id|urlencode }}" class="fs-13 text-muted">All</a>
+                    </div>
+                    <div class="card-body pt-0">
+                        {% for c in conns %}
+                            <div class="rd-def">
+                                <dt class="fw-normal">
+                                    {% if c.outgoing %}
+                                        <span class="badge rd-badge-purple me-1" title="A session this device started">Outgoing</span>{% if c.outgoing.id %}<a href="/devices/{{ c.outgoing.id }}">{{ c.outgoing.label }}</a>{% else %}{{ c.outgoing.label }}{% endif %}
+                                    {% else %}
+                                    {{ c.from }}
+                                    <span class="text-muted">· {{ c.ip }}</span>
+                                    {% endif %}
+                                    {% if c.transport %}<span class="badge bg-secondary-subtle text-secondary">{{ c.transport }}{% if c.relay_size %} {{ c.relay_size }}{% endif %}</span>{% endif %}
+                                    {% if c.note %}
+                                        <span class="rd-cell-sub rd-conn-note-full"><i class="ri-sticky-note-line"></i> {{ c.note }}{% if c.note_user %} · {{ c.note_user }}{% endif %}</span>
+                                    {% endif %}
+                                </dt>
+                                <dd class="text-end text-muted mb-0">
+                                    {{ c.ago }}
+                                    {% if c.duration %} · {{ c.duration }} {% endif %}
+                                </dd>
+                            </div>
+                        {% else %}
+                            <span class="text-muted">No connections recorded.</span>
+                        {% endfor %}
+                    </div>
+                </div>
+
+        </div></div>
+    {% endif %}
+
+    {% if tab == 'activity' and can_audit %}
+        <div class="row g-3"><div class="col-lg-7">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">Recent file transfers</h5>
+                        <a href="/logs/file-transfers?search={{ d.rustdesk_id|urlencode }}" class="fs-13 text-muted">All</a>
+                    </div>
+                    <div class="card-body pt-0">
+                        {% for t in transfers %}
+                            <div class="rd-def">
+                                <dt class="fw-normal text-truncate" style="max-width: 70%" title="{{ t.title }}">
+                                    {% if t.receive %}
+                                        <i class="ri-arrow-down-line text-warning me-1" title="Receive"></i>
+                                    {% else %}
+                                        <i class="ri-arrow-up-line text-info me-1" title="Send"></i>
+                                    {% endif %}
+                                    {% if t.clipboard %}
+                                        <span class="badge bg-secondary-subtle text-secondary me-1">Clipboard</span>
+                                    {% endif %}
+                                    {{ t.label }}
+                                </dt>
+                                <dd class="text-end text-muted mb-0">
+                                    {% if t.outgoing %}<span class="badge rd-badge-purple me-1" title="A session this device started">Outgoing</span>{% if t.outgoing.id %}<a href="/devices/{{ t.outgoing.id }}">{{ t.outgoing.label }}</a>{% else %}{{ t.outgoing.label }}{% endif %} ·{% endif %}
+                                    {{ t.ago }}
+                                </dd>
+                            </div>
+                        {% else %}
+                            <span class="text-muted">No file transfers recorded.</span>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">Alarms</h5>
+                        <a href="/logs/alarms?search={{ d.rustdesk_id|urlencode }}" class="fs-13 text-muted">All</a>
+                    </div>
+                    <div class="card-body pt-0">
+                        {% for a in alarms %}
+                            <div class="rd-def">
+                                <dt class="fw-normal">
+                                    <span class="badge bg-{{ a.severity }}-subtle text-{{ a.severity }}">{{ a.label }}</span>
+                                </dt>
+                                <dd class="text-end text-muted mb-0">{{ a.ago }}</dd>
+                            </div>
+                        {% else %}
+                            <span class="text-muted">No alarms recorded.</span>
+                        {% endfor %}
+                    </div>
+                </div>
+
+        </div><div class="col-lg-5">
+                <div class="card">
+                    <div class="card-header"><h5 class="card-title mb-0">Notifications</h5></div>
+                    <div class="card-body pt-0">
+                        {% for n in notes %}
+                            <div class="rd-def">
+                                <dt class="fw-normal">
+                                    {{ n.label }}
+                                    {% if n.error %}<span class="d-block text-danger fs-13 text-break">{{ n.error }}</span>{% endif %}
+                                </dt>
+                                <dd class="text-end text-muted mb-0 text-nowrap">
+                                    <span title="{{ n.at }}">{{ n.ago }}</span>
+                                    <span class="badge bg-{{ n.tone }}-subtle text-{{ n.tone }} ms-1">{{ n.status }}</span>
+                                </dd>
+                            </div>
+                        {% else %}
+                            <span class="text-muted">No notifications sent for this device.</span>
+                        {% endfor %}
+                    </div>
+                </div>
+        </div></div>
+    {% endif %}
+
+    {% if tab == 'details' %}
+    <div class="row g-3">
+        <div class="col-lg-7">
             {# Facts. Everything the client reports, plus console assignment. #}
             <div class="card">
                 <div class="card-header"><h5 class="card-title mb-0">Device</h5></div>
@@ -298,7 +462,7 @@
             </div>
 
             {# Membership: which books hand this device out. #}
-            <div class="card">
+            <div class="card" id="address-books">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="card-title mb-0">Address books</h5>
                     {% if can_books and not d.trashed and not ab_open %}
@@ -350,117 +514,8 @@
                 </div>
             </div>
         </div>
-
-        <div class="col-lg-7">
-            {% if can_audit %}
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="card-title mb-0">Recent connections</h5>
-                        <a href="/logs/connections?search={{ d.rustdesk_id|urlencode }}" class="fs-13 text-muted">All</a>
-                    </div>
-                    <div class="card-body pt-0">
-                        {% for c in conns %}
-                            <div class="rd-def">
-                                <dt class="fw-normal">
-                                    {% if c.outgoing %}
-                                        <span class="badge rd-badge-purple me-1" title="A session this device started">Outgoing</span>{% if c.outgoing.id %}<a href="/devices/{{ c.outgoing.id }}">{{ c.outgoing.label }}</a>{% else %}{{ c.outgoing.label }}{% endif %}
-                                    {% else %}
-                                    {{ c.from }}
-                                    <span class="text-muted">· {{ c.ip }}</span>
-                                    {% endif %}
-                                    {% if c.transport %}<span class="badge bg-secondary-subtle text-secondary">{{ c.transport }}{% if c.relay_size %} {{ c.relay_size }}{% endif %}</span>{% endif %}
-                                    {% if c.note %}
-                                        <span class="rd-cell-sub rd-conn-note-full"><i class="ri-sticky-note-line"></i> {{ c.note }}{% if c.note_user %} · {{ c.note_user }}{% endif %}</span>
-                                    {% endif %}
-                                </dt>
-                                <dd class="text-end text-muted mb-0">
-                                    {{ c.ago }}
-                                    {% if c.duration %} · {{ c.duration }} {% endif %}
-                                </dd>
-                            </div>
-                        {% else %}
-                            <span class="text-muted">No connections recorded.</span>
-                        {% endfor %}
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="card-title mb-0">Recent file transfers</h5>
-                        <a href="/logs/file-transfers?search={{ d.rustdesk_id|urlencode }}" class="fs-13 text-muted">All</a>
-                    </div>
-                    <div class="card-body pt-0">
-                        {% for t in transfers %}
-                            <div class="rd-def">
-                                <dt class="fw-normal text-truncate" style="max-width: 70%" title="{{ t.title }}">
-                                    {% if t.receive %}
-                                        <i class="ri-arrow-down-line text-warning me-1" title="Receive"></i>
-                                    {% else %}
-                                        <i class="ri-arrow-up-line text-info me-1" title="Send"></i>
-                                    {% endif %}
-                                    {% if t.clipboard %}
-                                        <span class="badge bg-secondary-subtle text-secondary me-1">Clipboard</span>
-                                    {% endif %}
-                                    {{ t.label }}
-                                </dt>
-                                <dd class="text-end text-muted mb-0">
-                                    {% if t.outgoing %}<span class="badge rd-badge-purple me-1" title="A session this device started">Outgoing</span>{% if t.outgoing.id %}<a href="/devices/{{ t.outgoing.id }}">{{ t.outgoing.label }}</a>{% else %}{{ t.outgoing.label }}{% endif %} ·{% endif %}
-                                    {{ t.ago }}
-                                </dd>
-                            </div>
-                        {% else %}
-                            <span class="text-muted">No file transfers recorded.</span>
-                        {% endfor %}
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="card-title mb-0">Alarms</h5>
-                        <a href="/logs/alarms?search={{ d.rustdesk_id|urlencode }}" class="fs-13 text-muted">All</a>
-                    </div>
-                    <div class="card-body pt-0">
-                        {% for a in alarms %}
-                            <div class="rd-def">
-                                <dt class="fw-normal">
-                                    <span class="badge bg-{{ a.severity }}-subtle text-{{ a.severity }}">{{ a.label }}</span>
-                                </dt>
-                                <dd class="text-end text-muted mb-0">{{ a.ago }}</dd>
-                            </div>
-                        {% else %}
-                            <span class="text-muted">No alarms recorded.</span>
-                        {% endfor %}
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header"><h5 class="card-title mb-0">Notifications</h5></div>
-                    <div class="card-body pt-0">
-                        {% for n in notes %}
-                            <div class="rd-def">
-                                <dt class="fw-normal">
-                                    {{ n.label }}
-                                    {% if n.error %}<span class="d-block text-danger fs-13 text-break">{{ n.error }}</span>{% endif %}
-                                </dt>
-                                <dd class="text-end text-muted mb-0 text-nowrap">
-                                    <span title="{{ n.at }}">{{ n.ago }}</span>
-                                    <span class="badge bg-{{ n.tone }}-subtle text-{{ n.tone }} ms-1">{{ n.status }}</span>
-                                </dd>
-                            </div>
-                        {% else %}
-                            <span class="text-muted">No notifications sent for this device.</span>
-                        {% endfor %}
-                    </div>
-                </div>
-            {% else %}
-                <div class="card">
-                    <div class="card-body text-muted">
-                        Activity history needs the audit permission.
-                    </div>
-                </div>
-            {% endif %}
-        </div>
     </div>
+    {% endif %}
 
     {% include "devices/modals.html" %}
 </div>

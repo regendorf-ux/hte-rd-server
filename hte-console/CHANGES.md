@@ -12,7 +12,7 @@ with its licence in `rdclient/LICENSE-xterm.txt` and `NOTICE`), served with the 
 - Devices: a Strategy column (administrators only, sortable), IP sorts by address, shared hardware IDs of machines that both keep reporting are not
   duplicates (clone fix), rejected devices are listed in the recycle bin and a taken ID says where the device is.
 - Strategies: Duplicate; a device's "Inherit" option names the strategy it inherits.
-- Device page: outgoing sessions (only to devices the person may see); Overview > Active sessions shows aliases.
+- Device page in tabs (`?tab=overview|connections|activity|details`): Overview (hardware snapshot, who connected to and from the device over its last 100 sessions each way, one line per activity log, shortcut tiles), Connections, Activity, Details (facts, reach, share links, note, address books). It opens on Details after an edit, a flash message or a new share link. Outgoing sessions (only to devices the person may see); Overview > Active sessions shows aliases.
 - Settings > Email: a footer line for outgoing mail.
 - About dialog: click the version in the sidebar (people who see Settings). Version, release date (`RELEASED_AT` in `src/lib.rs`: set it when tagging),
   update available (the existing release check) and a link to the release notes.

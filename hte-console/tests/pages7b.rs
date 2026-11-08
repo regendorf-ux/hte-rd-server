@@ -420,13 +420,18 @@ async fn the_device_page() {
     let h = harness().await;
     h.sql("insert into audit_connections (rustdesk_id, from_peer, from_name, ip, conn_type, created_at, closed_at) values ('1001', '555', 'Front PC', '10.1.1.1', 0, '2025-10-25 03:10:00', '2025-10-25 03:12:05')");
     let cookie = h.login(&sid("devpage"), 1, json!({}));
-    let r = h.get("/devices/1", &cookie).await;
+    let r = h.get("/devices/1?tab=details", &cookie).await;
     assert_eq!(r.status, 200, "{}", r.body);
     let body = squash(&r.body);
     assert!(body.contains("Front PC") && body.contains("Windows 11"));
     assert!(body.contains("Who can reach this device"));
     assert!(body.contains("Set on the computer itself") || body.contains("Not managed by the console"));
-    assert!(body.contains("Recent connections") && body.contains("2m 5s"));
+    let conns = squash(&h.get("/devices/1?tab=connections", &cookie).await.body);
+    assert!(conns.contains("Recent connections") && conns.contains("2m 5s"));
+    // the overview: hardware, who connected to and from, one line per log; the lists are on their own tabs
+    let over = squash(&h.get("/devices/1", &cookie).await.body);
+    assert!(over.contains("Hardware snapshot") && over.contains("incoming") && over.contains("File transfers") && !over.contains("Who can reach this device"), "{over}");
+    assert!(squash(&h.get("/devices/1?tab=activity", &cookie).await.body).contains("Recent file transfers"));
     // the note
     let r = h.post_form("/devices/1/do", &cookie, &[tok(), ("do", "note"), ("note", "  hello  ")]).await;
     assert_eq!(r.status, 302, "{}", r.body);
@@ -443,7 +448,7 @@ async fn the_device_page() {
     assert_eq!(h.count("hte_device_passwords where rustdesk_id = '1001'"), 1);
     // Release ID: refused with nothing listening, audited either way; the button is on the page
     std::env::set_var("HTE_CONSOLE_HBBS_ADMIN", "127.0.0.1:1");
-    assert!(squash(&h.get("/devices/1", &cookie).await.body).contains("Release ID"));
+    assert!(squash(&h.get("/devices/1?tab=details", &cookie).await.body).contains("Release ID"));
     let r = h.post_form("/devices/1/do", &cookie, &[tok(), ("do", "release-id")]).await;
     assert_eq!(r.status, 302, "{}", r.body);
     assert_eq!(h.count("console_audits where action = 'hte.release_id' and summary = 'Release ID 1001: refused'"), 1);
@@ -461,26 +466,26 @@ async fn outgoing_sessions_on_the_device_page() {
     h.sql("insert into audit_connections (rustdesk_id, from_peer, from_name, ip, conn_type, created_at, closed_at) values ('9999', '1001', 'Front PC', '10.1.1.1', 0, '2025-10-25 03:20:00', '2025-10-25 03:22:05')");
     h.sql("insert into audit_file_transfers (rustdesk_id, from_peer, from_name, path, info, is_file, direction, file_count, ip, created_at, updated_at) values ('1002', '1001', 'Front PC', '/tmp/x', '{}', 1, 0, 1, '10.1.1.1', '2025-10-25 03:30:00', '2025-10-25 03:30:00')");
     let admin = h.login(&sid("outgoing1"), 1, json!({}));
-    let body = h.get("/devices/1", &admin).await.body;
+    let body = h.get("/devices/1?tab=connections", &admin).await.body + &h.get("/devices/1?tab=activity", &admin).await.body;
     assert!(body.matches("Outgoing</span>").count() >= 3, "two connections and a transfer: {}", squash(&body));
     assert!(body.contains(r#"<a href="/devices/2">BACK-PC</a>"#), "the device it reached is named and linked");
     assert!(squash(&body).contains("Outgoing</span>9999") && !body.contains(r#"/devices/9999"#), "an unknown target is shown by ID, with no link");
     // the target's own page lists the same session as incoming, as before
-    let body = h.get("/devices/2", &admin).await.body;
+    let body = h.get("/devices/2?tab=connections", &admin).await.body;
     assert!(!body.contains("Outgoing</span>"), "{}", squash(&body));
     // a person who sees device 1001 but not 1002 and 9999 sees none of the outgoing rows
     h.sql(r#"update roles set permissions = '{"audit":"rw","device":"r"}' where id = 1"#);
     h.sql("update users set role_id = 1 where id = 2");
     h.sql("update devices set user_id = 2 where id = 1");
     let dana = h.login(&sid("outgoing2"), 2, json!({}));
-    let r = h.get("/devices/1", &dana).await;
+    let r = h.get("/devices/1?tab=connections", &dana).await;
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(r.body.contains("Recent connections"), "she may read the logs");
     assert!(!r.body.contains("Outgoing</span>") && !r.body.contains("BACK-PC"), "{}", squash(&r.body));
     // given 1002 too, she sees the sessions to it (and still not the ones to 9999)
     h.sql("update devices set user_id = 2 where id = 2");
-    let r = h.get("/devices/1", &dana).await;
-    assert_eq!(r.body.matches("Outgoing</span>").count(), 2, "{}", squash(&r.body));
+    let both = h.get("/devices/1?tab=connections", &dana).await.body + &h.get("/devices/1?tab=activity", &dana).await.body;
+    assert_eq!(both.matches("Outgoing</span>").count(), 2, "{}", squash(&both));
 }
 
 #[tokio::test]
@@ -1313,7 +1318,7 @@ async fn share_links() {
 
     // off by default: no card, no link can be made, the viewer page is not there, and the policy is the old one
     std::env::set_var("HTE_REMOTE_SHARE_LINKS", "1");
-    assert!(!h.get("/devices/1", &admin).await.body.contains("Share screen"));
+    assert!(!h.get("/devices/1?tab=details", &admin).await.body.contains("Share screen"));
     assert_eq!(h.post_form("/devices/1/do", &admin, &create("Jan")).await.status, 404);
     assert_eq!(h.get("/s", &admin).await.status, 404);
     assert_eq!(h.count("device_shares"), 0);
@@ -1321,13 +1326,13 @@ async fn share_links() {
 
     // on: the card is there, and an administrator makes a link, shown once
     h.sql("insert into settings (key, value, created_at, updated_at) values ('hte_share_links', '1', '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
-    assert!(h.get("/devices/1", &admin).await.body.contains("Share screen"));
+    assert!(h.get("/devices/1?tab=details", &admin).await.body.contains("Share screen"));
     let r = h.post_form("/devices/1/do", &admin, &create("Jan, printer")).await;
     assert_eq!(r.status, 302, "{}", r.body);
     let page = h.get("/devices/1", &admin).await.body;
     let token = share_token(&page);
     assert!(page.contains("Jan, printer") && page.contains("Copy this link now"));
-    assert!(!h.get("/devices/1", &admin).await.body.contains(&token), "the link is shown once");
+    assert!(!h.get("/devices/1?tab=details", &admin).await.body.contains(&token), "the link is shown once");
     assert_eq!(h.count(&format!("device_shares where token_hash = '{token}'")), 0);
     assert_eq!(h.count("console_audits where action = 'device.share.create'"), 1);
     // a bad form makes nothing
@@ -1389,7 +1394,7 @@ async fn share_links() {
     // who may make links: administrators only, until Settings says otherwise; and only for devices they may reach
     let dana = h.login(&sid("share2"), 2, json!({})); // owns 1001 and 1003, not 1002
     assert_eq!(h.post_form("/devices/1/do", &dana, &create("Dana")).await.status, 403, "administrators only by default");
-    assert!(!h.get("/devices/1", &dana).await.body.contains("New share link"));
+    assert!(!h.get("/devices/1?tab=details", &dana).await.body.contains("New share link"));
     h.sql("insert into settings (key, value, created_at, updated_at) values ('hte_share_who', 'reach', '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
     assert_eq!(h.post_form("/devices/2/do", &dana, &create("Dana")).await.status, 404, "a device outside her reach is not there for her");
     assert_eq!(h.count("device_shares where label = 'Dana'"), 0);

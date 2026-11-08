@@ -337,11 +337,38 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
         }
     }
 
+    // Overview tab: who connected to this device and what it connected to, over its last 100 sessions each way
+    let flow = if can_audit { flow(ctx, c, &rid)? } else { Value::Null };
+    let strip = if can_audit {
+        let latest = |table: &str, extra: &str| -> Result<String, Fault> {
+            Ok(match db::first(c, &format!(r#"select "created_at" from "{table}" where "rustdesk_id" = ?{extra} order by "created_at" desc limit 1"#), &[P(Val::str(&rid))])? {
+                Some(r) => format!("Latest {}", diff_text(&r, "created_at", now, "")),
+                None => "None recorded".to_string(),
+            })
+        };
+        let notified = if notes.is_empty() { "None recorded".to_string() } else { format!("Latest {}", notes[0]["ago"].as_str().unwrap_or("")) };
+        json!([
+            {"icon": "ri-download-2-line", "label": "File transfers", "sub": latest("audit_file_transfers", "")?, "tab": "activity"},
+            {"icon": "ri-alarm-warning-line", "label": "Alarms", "sub": latest("alarm_logs", "")?, "tab": "activity"},
+            {"icon": "ri-notification-3-line", "label": "Notifications", "sub": notified, "tab": "activity"},
+        ])
+    } else {
+        Value::Null
+    };
     let url = format!("/devices/{id}");
     let layout = ctx.layout(c, "devices.show", "Device", "Manage")?;
     let note_editing = q(req, "note") == "1" && can_edit;
     let (note_errors, note_value) = (devices::flash(ctx, "note_error"), devices::flash(ctx, "note_value"));
     let title = { let a = s(&device, "alias"); if truthy(&a) { a } else { let h = s(&device, "hostname"); if truthy(&h) { h } else { rid.clone() } } };
+    let shares = super::share::card(ctx, c, &device)?;
+    // the tab asked for; else the one the page was left for (an edit, a flash message, a new link), else the overview
+    let working = note_editing || ab_open || q(req, "share") == "1" || !devices::flash(ctx, "duplicate_result").is_empty() || !devices::flash(ctx, "ab_result").is_empty() || !devices::flash(ctx, "ab_error").is_empty() || !note_errors.is_empty() || !matches!(modal, Modal::None)
+        || shares.get("new_link").and_then(|v| v.as_str()).map_or(false, |l| !l.is_empty()) || shares.get("error").and_then(|v| v.as_str()).map_or(false, |l| !l.is_empty());
+    let tab = match q(req, "tab").as_str() {
+        t @ ("overview" | "connections" | "activity" | "details") if can_audit || matches!(t, "overview" | "details") => t.to_string(),
+        _ if working => "details".to_string(),
+        _ => "overview".to_string(),
+    };
     let page = json!({
         "id": id, "url": url,
         "d": {
@@ -364,7 +391,9 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
         "twins": twin_items, "twin_count": twin_count, "twin_first": twin_first,
         "duplicate_result": devices::flash(ctx, "duplicate_result"),
         "reach": reach,
-        "shares": super::share::card(ctx, c, &device)?, "share_open": q(req, "share") == "1",
+        "shares": shares, "share_open": q(req, "share") == "1", "flow": flow, "strip": strip, "tab": tab,
+        "tab_names": json!([["overview", "ri-home-4-line", "Overview"], ["connections", "ri-links-line", "Connections"], ["activity", "ri-pulse-line", "Activity"], ["details", "ri-information-line", "Details"]]),
+        "last_seen_line": if online { "Online just now".to_string() } else { format!("Last seen {}", diff_text(&device, "last_online_at", now, "never")) },
         "note_editing": note_editing, "note_error": note_errors,
         "note_value": if note_value.is_empty() { s(&device, "note") } else { note_value },
         "ab_open": ab_open, "addable": addable, "ab_error": devices::flash(ctx, "ab_error"), "ab_result": devices::flash(ctx, "ab_result"),
@@ -405,7 +434,7 @@ pub fn act(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
     let url = format!("/devices/{id}");
     let Some(device) = device_row(ctx, c, id)? else { return Ok(abort(404)) };
     let rid = s(&device, "rustdesk_id");
-    let back = Reply::Redirect(url.clone());
+    let back = Reply::Redirect(format!("{url}?tab=details"));
     match body.get("do").as_str() {
         "note" => {
             if !ctx.allows("device", "rw") {
@@ -566,4 +595,47 @@ fn outgoing_peer(targets: &std::collections::HashMap<String, (String, Option<i64
     }
     let (label, id) = targets.get(&target).cloned().unwrap_or((target, None));
     json!({"label": label, "id": id})
+}
+
+/// The Overview tab's diagram: who connected to this device (left) and what it connected to (right), over its last 100 sessions each
+/// way, four names each at most with the rest counted. Outgoing sessions only to devices this person sees, as everywhere else.
+fn flow(ctx: &Ctx, c: &Connection, rid: &str) -> Result<Value, Fault> {
+    let name_of = |peer: &str, name: &str| if truthy(name) { name.to_string() } else { peer.to_string() };
+    let top = |rows: Vec<(String, String, i64)>| -> (Vec<Value>, i64, i64) {
+        let total: i64 = rows.iter().map(|r| r.2).sum();
+        let shown: Vec<Value> = rows.iter().take(4).map(|(_, n, k)| json!({"name": n, "count": k})).collect();
+        let more = rows.iter().skip(4).count() as i64;
+        (shown, total, more)
+    };
+    let mut incoming: Vec<(String, String, i64)> = vec![];
+    for r in db::rows(
+        c,
+        r#"select "from_peer", max("from_name") as "from_name", count(*) as n from (select * from "audit_connections" where "rustdesk_id" = ? order by "created_at" desc limit 100) group by "from_peer" order by n desc, "from_peer""#,
+        &[P(Val::str(rid))],
+    )? {
+        let peer = s(&r, "from_peer");
+        incoming.push((peer.clone(), name_of(&peer, &s(&r, "from_name")), r.val("n").to_int()));
+    }
+    let (scope_sql, mut scope_params) = outgoing_scope(ctx, c)?;
+    let mut params = vec![P(Val::str(rid))];
+    params.append(&mut scope_params);
+    let mut outgoing: Vec<(String, String, i64)> = vec![];
+    let out_rows = db::rows(
+        c,
+        &format!(r#"select "rustdesk_id", count(*) as n from (select * from "audit_connections" where "from_peer" = ? and {scope_sql} order by "created_at" desc limit 100) group by "rustdesk_id" order by n desc, "rustdesk_id""#),
+        &params,
+    )?;
+    let targets = outgoing_targets(ctx, c, rid, out_rows.iter())?;
+    for r in &out_rows {
+        let id = s(r, "rustdesk_id");
+        let label = targets.get(&id).map(|t| t.0.clone()).unwrap_or_else(|| id.clone());
+        outgoing.push((id, label, r.val("n").to_int()));
+    }
+    let (inn, in_count, in_more) = top(incoming);
+    let (out, out_count, out_more) = top(outgoing);
+    let total = in_count + out_count;
+    Ok(json!({
+        "in": inn, "in_count": in_count, "in_more": in_more, "out": out, "out_count": out_count, "out_more": out_more, "total": total,
+        "in_pct": if total > 0 { in_count * 100 / total } else { 0 }, "empty": total == 0,
+    }))
 }
