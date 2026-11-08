@@ -21,12 +21,13 @@ fn root() -> PathBuf {
 }
 
 /// Lines that may say CortenDesk: the one credit, licence-required notices, and the web client's own replacements of the name.
-const ALLOWED: [&str; 9] = [
+const ALLOWED: [&str; 10] = [
     "github.com/marcpope/cortendesk", // Settings > About: the credit
     "Corten<span>Desk</span>",        // webclient.rs: what the bundled web client says, replaced at serve time
     "alt=\"CortenDesk\"",
     "\\u2014 CortenDesk`",
     "\\xB7 CortenDesk`",
+    "(\"CortenDesk Web Client\"", // webclient.rs: the manifest's name, replaced at serve time
     "slug(\"CortenDesk\")",           // cache.rs: Laravel's slug of the old default APP_NAME, a test
     "(from CortenDesk)",              // asset header comments: where the file came from
     "Modified for CortenDesk",        // remixicon.css: the licence's modification notice
@@ -236,7 +237,9 @@ fn no_company_or_private_details_in_the_repository() {
             }
             for m in guid.find_iter(line) {
                 let g = m.as_str().to_ascii_lowercase();
-                let ok = g.starts_with("00000000-0000-") || g == "9188040d-6c67-4c5b-b112-36a304b66dad" || g.contains("1111-4222");
+                let ok = g.starts_with("00000000-0000-") || g == "9188040d-6c67-4c5b-b112-36a304b66dad"
+                    || ["e4c181d0-41c7-4ae6-8ef0-36581b6b2b12", "01890a5d-ac96-774b-bcce-b302099a8057"].contains(&g.as_str()) // example uuids of hbbs's relay-uuid tests (UUID v4 and v7 shapes)
+                    || g.contains("1111-4222");
                 if !ok {
                     hit = Some("a GUID (tenant or client id?)");
                 }

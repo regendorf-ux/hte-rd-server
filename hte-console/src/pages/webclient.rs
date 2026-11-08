@@ -56,6 +56,9 @@ pub const BRAND_CSS: &[(&str, &str, usize)] = &[
 
 pub const BRAND_WORKER: &[(&str, &str, usize)] = &[("//# sourceMappingURL=session.worker.js.map", "", 1)];
 
+/// The Add to Home Screen manifest (CortenDesk 1.21): the name the phone shows under the icon.
+pub const BRAND_MANIFEST: &[(&str, &str, usize)] = &[("CortenDesk Web Client", "HTE Remote Web Client", 1), (r#""CortenDesk""#, r#""HTE Remote""#, 1)];
+
 fn apply(src: &str, table: &[(&str, &str, usize)]) -> Result<String, String> {
     let mut out = src.to_string();
     for (find, with, want) in table {
@@ -90,6 +93,39 @@ struct Files {
     app_css: Served,
     worker: Served,
     logo: Served,
+    manifest: Served,
+    /// `chunks/<name>-<hash>.js` and the licence notices bundled with them and the stylesheet, by their path under `/rdclient/`.
+    /// The terminal's code (xterm.js, MIT) and the video muxer load on demand from here; the names carry a content hash, so they cache for good.
+    extra: std::collections::HashMap<String, Served>,
+}
+
+/// The files under `chunks/` and the `*.LEGAL.txt` notices, with the source-map comment of a script dropped (the maps are not served).
+fn extra_files() -> std::collections::HashMap<String, Served> {
+    let mut out = std::collections::HashMap::new();
+    let mut add = |path: &str, bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        if path.ends_with(".js") {
+            let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with("//# sourceMappingURL=")).collect();
+            out.insert(path.to_string(), served(kept.join("\n").into_bytes(), "text/javascript; charset=utf-8"));
+        } else if path.ends_with(".LEGAL.txt") {
+            out.insert(path.to_string(), served(text.into_bytes(), "text/plain; charset=utf-8"));
+        }
+    };
+    if let Some(dir) = BUNDLE.get_dir("chunks") {
+        for f in dir.files() {
+            if let Some(name) = f.path().file_name().and_then(|n| n.to_str()) {
+                add(&format!("chunks/{name}"), f.contents());
+            }
+        }
+    }
+    for f in BUNDLE.files() {
+        if let Some(name) = f.path().file_name().and_then(|n| n.to_str()) {
+            if name.ends_with(".LEGAL.txt") {
+                add(name, f.contents());
+            }
+        }
+    }
+    out
 }
 
 fn files() -> &'static Files {
@@ -105,8 +141,11 @@ fn files() -> &'static Files {
             file("app.css").to_string()
         });
         let worker = apply(file("session.worker.js"), BRAND_WORKER).unwrap_or_else(|_| file("session.worker.js").to_string());
+        let manifest = apply(file("manifest.webmanifest"), BRAND_MANIFEST).unwrap_or_else(|_| file("manifest.webmanifest").to_string());
         let logo = super::assets::find("images/hte-remote.png").expect("the HTE Remote logo is embedded").to_vec();
         Files {
+            manifest: served(manifest.into_bytes(), "application/manifest+json"),
+            extra: extra_files(),
             app_js: served(app_js.into_bytes(), "text/javascript; charset=utf-8"),
             app_css: served(app_css.into_bytes(), "text/css; charset=utf-8"),
             worker: served(worker.into_bytes(), "text/javascript; charset=utf-8"),
@@ -128,9 +167,12 @@ pub fn respond(name: &str, query: Option<&str>, headers: &HeaderMap, head: bool)
         "app.css" => &f.app_css,
         "session.worker.js" => &f.worker,
         "logo.png" => &f.logo,
+        "manifest.webmanifest" => &f.manifest,
+        n if f.extra.contains_key(n) => &f.extra[n],
         _ => return Response::builder().status(StatusCode::NOT_FOUND).header(header::CONTENT_TYPE, "text/plain").body(Body::from("Not Found")).unwrap(),
     };
-    let versioned = query.map_or(false, |q| q.split('&').any(|p| p.starts_with("v=") && p.len() > 2));
+    // a chunk's name carries its content hash: it never changes under that name
+    let versioned = name.starts_with("chunks/") || query.map_or(false, |q| q.split('&').any(|p| p.starts_with("v=") && p.len() > 2));
     let cache = if versioned { "public, max-age=31536000, immutable" } else { "no-cache" };
     let fresh = headers
         .get(header::IF_NONE_MATCH)

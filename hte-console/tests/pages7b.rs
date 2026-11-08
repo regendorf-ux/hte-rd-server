@@ -884,6 +884,27 @@ async fn the_web_client() {
     assert_eq!(get("/rdclient/app.css").await.unwrap().headers()["content-type"], "text/css; charset=utf-8");
     assert_eq!(get("/rdclient/session.worker.js").await.unwrap().status(), 200);
     assert_eq!(get("/rdclient/app.js.map").await.unwrap().status(), 404);
+    // code that loads on demand (the terminal's xterm.js, the video muxer): the chunks the bundle names are served, cached for good, with
+    // their licence notice beside them; the manifest carries the product's name; nothing else under chunks/ exists
+    let chunks: Vec<&str> = text.match_indices("./chunks/").map(|(i, _)| &text[i + 2..i + text[i..].find('"').unwrap()]).collect();
+    assert!(chunks.iter().any(|c| c.starts_with("chunks/xterm-")), "the terminal's xterm chunk is named by the bundle: {chunks:?}");
+    for ch in &chunks {
+        let r = get(&format!("/rdclient/{ch}")).await.unwrap();
+        assert_eq!(r.status(), 200, "{ch}");
+        assert_eq!(r.headers()["content-type"], "text/javascript; charset=utf-8");
+        assert_eq!(r.headers()["cache-control"], "public, max-age=31536000, immutable");
+        assert!(!r.text().await.unwrap().contains("sourceMappingURL"), "{ch}");
+    }
+    let xterm = chunks.iter().find(|c| c.starts_with("chunks/xterm-")).unwrap();
+    let notice = get(&format!("/rdclient/{xterm}.LEGAL.txt")).await.unwrap();
+    assert_eq!(notice.status(), 200);
+    assert!(notice.text().await.unwrap().contains("xterm.js authors"));
+    assert_eq!(get("/rdclient/chunks/not-there.js").await.unwrap().status(), 404);
+    assert_eq!(get("/rdclient/chunks/xterm-AAAA.js.map").await.unwrap().status(), 404);
+    let manifest = get("/rdclient/manifest.webmanifest").await.unwrap();
+    assert_eq!(manifest.status(), 200);
+    let manifest = manifest.text().await.unwrap();
+    assert!(manifest.contains("HTE Remote Web Client") && !manifest.contains("CortenDesk"), "{manifest}");
     // without a session the page is not shown
     let r = h.client.get(format!("{}/webclient?id=1001", h.url)).send().await.unwrap();
     assert!(r.status().is_redirection(), "{}", r.status());
