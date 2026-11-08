@@ -1082,11 +1082,16 @@ pub fn save(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
     if let Err(b) = validate::validate_db(&data, &rules, &probe_fn)? {
         errors = first_messages(&b);
     } else if id == 0 {
-        let mut u = crate::php::Arr::new();
-        u.set(crate::php::Key::Str(b"formRustdeskId".to_vec()), Val::str(&rid));
-        let ur: [(&str, &[Rule]); 1] = [("formRustdeskId", &[Rule::Unique("devices", "rustdesk_id", None)])];
-        if let Err(b) = validate::validate_db(&u, &ur, &probe_fn)? {
-            errors = first_messages(&b);
+        // the unique index also covers rejected and removed rows, which the list hides: say where the ID is (CortenDesk 1.21.0, #140)
+        if let Some(existing) = db::first(c, r#"select * from "devices" where "rustdesk_id" = ? limit 1"#, &[P(Val::str(&rid))])? {
+            let message = if !existing.is_null("deleted_at") {
+                "This ID belongs to a device in the recycle bin. Restore it or delete it permanently first."
+            } else if s(&existing, "status") == "pending" {
+                "This ID is waiting in the Pending tab. Approve or reject it there."
+            } else {
+                "This ID is already registered, possibly to another user or group."
+            };
+            errors.insert("formRustdeskId".into(), json!(message));
         }
     }
     if !errors.is_empty() {

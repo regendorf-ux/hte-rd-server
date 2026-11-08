@@ -227,16 +227,23 @@ pub fn ownership(c: &Connection, user: &Row, w: &mut Where) -> Result<(), Fault>
 pub fn visible(c: &Connection, user: &Row, trashed: bool) -> Result<Where, Fault> {
     let mut w = Where::default();
     ownership(c, user, &mut w)?;
-    w.add(r#""devices"."status" = ?"#, vec![P(Val::str("active"))]);
-    w.add(if trashed { r#""devices"."deleted_at" is not null"# } else { r#""devices"."deleted_at" is null"# }, vec![]);
+    if trashed {
+        // the recycle bin (`visibleWithTrashed` + `onlyTrashed`, CortenDesk 1.21.0): a rejected device is soft-deleted but keeps
+        // status 'pending', and held its unique ID while the bin hid it
+        w.add(r#""devices"."deleted_at" is not null"#, vec![]);
+    } else {
+        w.add(r#""devices"."status" = ?"#, vec![P(Val::str("active"))]);
+        w.add(r#""devices"."deleted_at" is null"#, vec![]);
+    }
     Ok(w)
 }
 
-/// `Device::withTrashed()->visibleTo($user)`
+/// `Device::visibleWithTrashed($user)`: visibleTo, plus soft-deleted rows whatever their status (rejecting a pending
+/// device soft-deletes it and leaves it `pending`, so plain visibleTo hid it from the recycle bin).
 pub fn visible_with_trashed(c: &Connection, user: &Row) -> Result<Where, Fault> {
     let mut w = Where::default();
     ownership(c, user, &mut w)?;
-    w.add(r#""devices"."status" = ?"#, vec![P(Val::str("active"))]);
+    w.add(r#"("devices"."status" = 'active' or "devices"."deleted_at" is not null)"#, vec![]);
     Ok(w)
 }
 

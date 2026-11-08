@@ -380,7 +380,7 @@ async fn device_writes() {
     assert_eq!(h.count("devices where rustdesk_id = '2001'"), 1);
     let r = h.post_form("/devices/save", &cookie, &[tok(), ("id", "0"), ("rustdesk_id", "2001"), ("return", "/devices")]).await;
     assert_eq!(r.status, 422);
-    assert!(r.body.contains("The form rustdesk id has already been taken."), "{}", r.body);
+    assert!(r.body.contains("This ID is already registered, possibly to another user or group."), "{}", r.body);
     // delete, restore, destroy
     let r = h.post_form("/devices/bulk", &cookie, &[tok(), ("do", "delete"), ("selected[]", "2"), ("back", "")]).await;
     assert_eq!(r.status, 200);
@@ -396,6 +396,22 @@ async fn device_writes() {
     h.post_form("/devices/act", &cookie, &[tok(), ("do", "approve"), ("id", "4"), ("back", "pending=1")]).await;
     assert_eq!(h.text("select status from devices where id = 4"), "active");
     assert_eq!(h.text("select summary from console_audits where action = 'device.approve'"), "Approved device 1004");
+    // a rejected device is listed in the recycle bin so its ID can be freed (CortenDesk 1.21.0, #140); the Add dialog says where a taken ID is
+    h.sql("insert into devices (id, rustdesk_id, uuid, hostname, status, created_at, updated_at) values (6, '1006', 'u6', 'REJECT-PC', 'pending', '2025-01-01 00:00:00', '2025-01-01 00:00:00'), (7, '1007', 'u7', 'WAIT-PC', 'pending', '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
+    h.post_form("/devices/act", &cookie, &[tok(), ("do", "reject"), ("id", "6"), ("back", "pending=1")]).await;
+    assert_eq!(h.text("select status from devices where id = 6"), "pending");
+    assert!(!h.text("select coalesce(deleted_at, '') from devices where id = 6").is_empty());
+    let body = h.get("/devices?trashed=1", &cookie).await.body;
+    assert!(body.contains("REJECT-PC") && body.contains("1006"), "the recycle bin lists a rejected device");
+    assert!(squash(&body).contains("Recycle bin"));
+    let r = h.post_form("/devices/save", &cookie, &[tok(), ("id", "0"), ("rustdesk_id", "1006"), ("return", "/devices")]).await;
+    assert_eq!(r.status, 422);
+    assert!(r.body.contains("This ID belongs to a device in the recycle bin. Restore it or delete it permanently first."));
+    let r = h.post_form("/devices/save", &cookie, &[tok(), ("id", "0"), ("rustdesk_id", "1007"), ("return", "/devices")]).await;
+    assert_eq!(r.status, 422);
+    assert!(r.body.contains("This ID is waiting in the Pending tab. Approve or reject it there."));
+    h.post_form("/devices/act", &cookie, &[tok(), ("do", "destroy"), ("id", "6"), ("back", "trashed=1")]).await;
+    assert_eq!(h.count("devices where id = 6"), 0, "deleting it for good frees the ID");
 }
 
 #[tokio::test(flavor = "multi_thread")]
