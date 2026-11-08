@@ -18,5 +18,10 @@ Third-party files under assets/, each under its own licence (the licence text si
   vendor/htmx/         htmx, BSD Zero-Clause License, (c) Big Sky Software
   fonts/figtree/       Figtree, SIL Open Font License 1.1, (c) The Figtree Project Authors
 
+The web client's terminal (CortenDesk 1.23.0, contributed there by theores) is xterm.js and its fit addon, MIT License, (c) The xterm.js authors,
+bundled in rdclient/chunks/ and loaded only when a terminal is opened; the licence is rdclient/LICENSE-xterm.txt and the notice that goes with the
+bundled code is served beside it (/rdclient/chunks/xterm-*.js.LEGAL.txt). The web client also bundles libsodium-wrappers (ISC), TweetNaCl.js
+(public domain), zstddec (MIT) and jMuxer (MIT).
+
 The RustDesk protocol definitions used by the web client originate from the RustDesk project (AGPL-3.0).
 RustDesk is a trademark of its owners; HTE Remote is not affiliated with or endorsed by the RustDesk project.

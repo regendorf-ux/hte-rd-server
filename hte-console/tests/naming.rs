@@ -315,3 +315,14 @@ fn new_archives_have_the_new_name() {
     assert_eq!(hte_console::backup::PREFIX, "hte-remote-backup-");
     assert!(hte_console::backup::is_backup_name("cortendesk-backup-20261024-033000.tar"), "old archives stay restorable");
 }
+
+/// The web terminal is xterm.js (MIT): the licence travels with the bundle and the credit is in NOTICE.
+#[test]
+fn the_terminal_s_licence_is_kept() {
+    let licence = fs::read_to_string(root().join("rdclient/LICENSE-xterm.txt")).unwrap();
+    assert!(licence.contains("The MIT License") && licence.contains("The xterm.js authors") && licence.contains("Permission is hereby granted"));
+    let notice = fs::read_to_string(root().join("NOTICE")).unwrap();
+    assert!(notice.contains("xterm.js") && notice.contains("LICENSE-xterm.txt"));
+    let chunks: Vec<String> = fs::read_dir(root().join("rdclient/chunks")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert!(chunks.iter().any(|c| c.starts_with("xterm-") && c.ends_with(".js.LEGAL.txt")), "the bundled notice stays beside the chunk: {chunks:?}");
+}
