@@ -7,7 +7,7 @@ is licensed under the GNU AGPL-3.0. This file lists the modifications and their 
 upstream's own record stays in `CHANGES.md`, and the credits are in `NOTICE` and `hte-console/NOTICE`. Branch `hte` is upstream's
 release tag plus the commits described here; changes to upstream files are small hooks marked `// HTE`.
 
-## HTE Remote 2.4.0 on upstream CortenDesk Server 1.5.1 (1.5.0 and 1.5.1 merged)
+## HTE Remote 2.4.0 (2.4.1: a test fix, hbbs unchanged) on upstream CortenDesk Server 1.5.1 (1.5.0 and 1.5.1 merged)
 
 - Merged upstream 1.5.0 and 1.5.1 (hbbs 1.5.1-hte.1). 1.5.1 drops a `RequestRelay` or `RelayResponse` whose relay uuid is empty, over 128 bytes
   or anything but ASCII letters, digits, `-` and `_` (the empty acknowledgement of a `RequestRelay` still passes). The drop comes before

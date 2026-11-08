@@ -2,6 +2,9 @@
 
 New HTE code (AGPL-3.0), not a change to upstream. The fork-level statement is `../HTE.md`.
 
+## 2.4.1 (2026-11-08): a test fix
+The relay-gate test file now runs its two tests one at a time (they share fixed ports; CI on the 2.4.0 tag failed on that). No change to the programs. The 2.4.0 tag has no image.
+
 ## 2.4.0 (2026-11-08): the web client and console of CortenDesk 1.23.0, share links, About dialog
 `hbbs` is 1.5.1-hte.1 (`../HTE.md`). The bundle in `rdclient/` is upstream's 1.23.0 build (prebuilt, not rebuilt here; AGPL-3.0, notices kept; xterm.js
 with its licence in `rdclient/LICENSE-xterm.txt` and `NOTICE`), served with the same listed branding substitutions (one more: the Add to Home Screen manifest).

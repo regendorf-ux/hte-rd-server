@@ -1,6 +1,6 @@
 [package]
 name = "hte-console"
-version = "2.4.0"
+version = "2.4.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "HTE Remote's console in Rust: web pages, the RustDesk client and admin APIs, the ID server link (device policy and per-person reach) and scheduled jobs, on the database of CortenDesk 1.15."

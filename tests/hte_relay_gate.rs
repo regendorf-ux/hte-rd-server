@@ -21,6 +21,10 @@ const GATE: &str = "31296";
 const SECRET: &str = "test-link-secret";
 const KEY: &str = "gate-test-key";
 
+/// Both tests start hbbs and hbbr on the same fixed ports (and the gate's), so they run one at a time. The guard is taken first in each
+/// test, so it is dropped last, after the servers are killed.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct Proc(Child);
 impl Drop for Proc {
     fn drop(&mut self) {
@@ -162,6 +166,7 @@ async fn request_relay_via_hbbs(target: &str, uuid: &str, token: &str) -> Framed
 
 #[tokio::test]
 async fn hbbr_pairs_only_what_hbbs_admitted() {
+    let _one_at_a_time = ONE_AT_A_TIME.lock().await;
     let url = start_console();
     let dir = tempfile::tempdir().unwrap();
     let (_hbbs, _hbbr) = spawn(dir.path(), &url).await;
@@ -187,6 +192,7 @@ async fn hbbr_pairs_only_what_hbbs_admitted() {
 /// malformed uuid, still gets no pairing, and a normal uuid still pairs.
 #[tokio::test]
 async fn a_malformed_relay_uuid_is_dropped_before_the_gate() {
+    let _one_at_a_time = ONE_AT_A_TIME.lock().await;
     let url = start_console();
     let dir = tempfile::tempdir().unwrap();
     let (_hbbs, _hbbr) = spawn(dir.path(), &url).await;
