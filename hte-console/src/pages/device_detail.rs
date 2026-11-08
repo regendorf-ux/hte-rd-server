@@ -274,7 +274,15 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
     if can_audit {
         let note_users: Vec<i64> = vec![];
         let _ = note_users;
-        let recent = db::rows(c, r#"select * from "audit_connections" where "rustdesk_id" = ? order by "created_at" desc limit 10"#, &[P(Val::str(&rid))])?;
+        // sessions to this device and, since CortenDesk 1.21 (#149), the ones it started (it is the controlling peer). An outgoing
+        // row is shown only when its target is a device this person sees: the same rule as the rest of the console.
+        let (scope_sql, mut scope_params) = outgoing_scope(ctx, c)?;
+        let both = |table: &str| format!(r#"select * from "{table}" where ("rustdesk_id" = ? or ("from_peer" = ? and {scope_sql})) order by "created_at" desc limit 10"#);
+        let mut params = vec![P(Val::str(&rid)), P(Val::str(&rid))];
+        params.append(&mut scope_params);
+        let recent = db::rows(c, &both("audit_connections"), &params)?;
+        let transfer_rows = db::rows(c, &both("audit_file_transfers"), &params)?;
+        let targets = outgoing_targets(ctx, c, &rid, recent.iter().chain(transfer_rows.iter()))?;
         let relayed = crate::path::relay_bytes(c, &recent)?; // HTE: how each got through
         for r in recent {
             let (transport, carried) = logs::transport_of(&r, &relayed);
@@ -286,19 +294,21 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
             };
             let from = { let a = s(&r, "from_name"); if truthy(&a) { a } else { let b = s(&r, "from_peer"); if truthy(&b) { b } else { "unknown".into() } } };
             conns.push(json!({
+                "outgoing": outgoing_peer(&targets, &rid, &r),
                 "from": from, "ip": s(&r, "ip"), "note": s(&r, "note"), "note_user": note_user,
                 "transport": transport.map(|_| crate::path::transport_label(transport)), "relay_size": carried.map(crate::path::human_bytes),
                 "ago": created.map(|t| time::ago(t, now, false)).unwrap_or_default(),
                 "duration": match (closed, created) { (Some(a), Some(b)) => Some(time::short_full(a, b)), _ => None },
             }));
         }
-        for r in db::rows(c, r#"select * from "audit_file_transfers" where "rustdesk_id" = ? order by "created_at" desc limit 10"#, &[P(Val::str(&rid))])? {
+        for r in transfer_rows {
             let path = s(&r, "path");
             let info = r.val("info").to_php_string().unwrap_or_default();
             let names = logs::file_names(&info);
             let clipboard = path.is_empty() && !names.is_empty();
             let label = logs::path_label(&path, &info, r.val("file_count").to_int());
             transfers.push(json!({
+                "outgoing": outgoing_peer(&targets, &rid, &r),
                 "receive": matches!(r.val("direction"), Val::Int(1)), "clipboard": clipboard,
                 "title": if clipboard { names.join(", ") } else { path.clone() },
                 "label": if truthy(&label) { label } else { "—".into() },
@@ -515,4 +525,42 @@ pub fn delete_from_detail(ctx: &Ctx, c: &Connection, detail: i64, ids: &[i64], f
     let message = devices::delete_confirmed(ctx, c, &[detail], from_books)?;
     ctx.flash("bulk_result", Value::String(message));
     Ok(Reply::Redirect("/devices".into()))
+}
+
+/// The condition that keeps a device's outgoing log rows to targets the viewer sees (`Device::visibleTo`; everything for an administrator).
+fn outgoing_scope(ctx: &Ctx, c: &Connection) -> Result<(String, Vec<P>), Fault> {
+    if ctx.is_admin() {
+        return Ok(("1 = 1".to_string(), vec![]));
+    }
+    let w = visible(c, &ctx.user, false)?;
+    Ok((format!(r#""rustdesk_id" in (select "devices"."rustdesk_id" from "devices"{})"#, w.sql()), w.params))
+}
+
+/// RustDesk ID -> (label, device id when the viewer may open it) for the devices this one reached.
+fn outgoing_targets<'a>(ctx: &Ctx, c: &Connection, rid: &str, rows: impl Iterator<Item = &'a Row>) -> Result<std::collections::HashMap<String, (String, Option<i64>)>, Fault> {
+    let mut ids: Vec<String> = rows.filter(|r| s(r, "rustdesk_id") != rid).map(|r| s(r, "rustdesk_id")).collect();
+    ids.sort();
+    ids.dedup();
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let mut w = visible(c, &ctx.user, false)?;
+    w.add(&format!(r#""devices"."rustdesk_id" in ({})"#, marks(ids.len())), ids.iter().map(|i| P(Val::str(i))).collect());
+    for d in db::rows(c, &format!(r#"select * from "devices"{}"#, w.sql()), &w.params)? {
+        let (alias, host, id) = (s(&d, "alias"), s(&d, "hostname"), s(&d, "rustdesk_id"));
+        let label = if truthy(&alias) { alias } else if truthy(&host) { host } else { id.clone() };
+        out.insert(id, (label, Some(d.id())));
+    }
+    Ok(out)
+}
+
+/// For a log row this device started: where it went (`{label, id}`), else null.
+fn outgoing_peer(targets: &std::collections::HashMap<String, (String, Option<i64>)>, rid: &str, r: &Row) -> Value {
+    let target = s(r, "rustdesk_id");
+    if target == rid {
+        return Value::Null;
+    }
+    let (label, id) = targets.get(&target).cloned().unwrap_or((target, None));
+    json!({"label": label, "id": id})
 }

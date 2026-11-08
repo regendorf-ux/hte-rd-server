@@ -41,3 +41,7 @@ form[style*="display:inline"] > button:not(.btn):not(.rd-iconbtn), form[style*="
 }
 form[style*="display:inline"] > button:not(.btn):not(.rd-iconbtn):hover, form[style*="display:contents"] > button:not(.btn):not(.rd-iconbtn):hover { text-decoration: underline; }
 form[style*="display:inline"] > button.rd-iconbtn, form[style*="display:contents"] > button.rd-iconbtn { background: none; border: 0; }
+
+/* Outgoing sessions on a device page (CortenDesk 1.21): the same purple as the console's other "outgoing" marks. */
+.badge.rd-badge-purple { background-color: rgba(139, 92, 246, 0.14); color: #8b5cf6; }
+[data-bs-theme="light"] .badge.rd-badge-purple { background-color: rgba(109, 40, 217, 0.14); color: #6d28d9; }

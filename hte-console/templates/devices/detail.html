@@ -284,8 +284,12 @@
                         {% for c in conns %}
                             <div class="rd-def">
                                 <dt class="fw-normal">
+                                    {% if c.outgoing %}
+                                        <span class="badge rd-badge-purple me-1" title="A session this device started">Outgoing</span>{% if c.outgoing.id %}<a href="/devices/{{ c.outgoing.id }}">{{ c.outgoing.label }}</a>{% else %}{{ c.outgoing.label }}{% endif %}
+                                    {% else %}
                                     {{ c.from }}
                                     <span class="text-muted">· {{ c.ip }}</span>
+                                    {% endif %}
                                     {% if c.transport %}<span class="badge bg-secondary-subtle text-secondary">{{ c.transport }}{% if c.relay_size %} {{ c.relay_size }}{% endif %}</span>{% endif %}
                                     {% if c.note %}
                                         <span class="rd-cell-sub rd-conn-note-full"><i class="ri-sticky-note-line"></i> {{ c.note }}{% if c.note_user %} · {{ c.note_user }}{% endif %}</span>
@@ -321,7 +325,10 @@
                                     {% endif %}
                                     {{ t.label }}
                                 </dt>
-                                <dd class="text-end text-muted mb-0">{{ t.ago }}</dd>
+                                <dd class="text-end text-muted mb-0">
+                                    {% if t.outgoing %}<span class="badge rd-badge-purple me-1" title="A session this device started">Outgoing</span>{% if t.outgoing.id %}<a href="/devices/{{ t.outgoing.id }}">{{ t.outgoing.label }}</a>{% else %}{{ t.outgoing.label }}{% endif %} ·{% endif %}
+                                    {{ t.ago }}
+                                </dd>
                             </div>
                         {% else %}
                             <span class="text-muted">No file transfers recorded.</span>

@@ -129,18 +129,33 @@ fn session_rows(ctx: &Ctx, c: &Connection) -> Result<Vec<Row>, Fault> {
 pub fn sessions(ctx: &Ctx, c: &Connection) -> Result<Value, Fault> {
     let tones = ["rd-tone-blue", "rd-tone-purple", "rd-tone-teal", "rd-tone-amber", "rd-tone-accent"];
     let rows = session_rows(ctx, c)?;
+    // aliases (CortenDesk 1.22.0, #154), from the devices this person sees: the device a session reached by its alias or host name,
+    // the controlling side by its alias when it is one of theirs
+    let mut ids: Vec<String> = rows.iter().flat_map(|r| [s(r, "rustdesk_id"), s(r, "from_peer")]).collect();
+    ids.sort();
+    ids.dedup();
+    let known = if ids.is_empty() {
+        vec![]
+    } else {
+        let mut w = visible(c, &ctx.user, false)?;
+        w.add(&format!(r#""devices"."rustdesk_id" in ({})"#, marks(ids.len())), ids.iter().map(|i| P(Val::str(i))).collect());
+        db::rows(c, &format!(r#"select * from "devices"{}"#, w.sql()), &w.params)?
+    };
+    let device = |rid: &str| known.iter().find(|d| s(d, "rustdesk_id") == rid);
     let items: Vec<Value> = rows
         .iter()
         .map(|r| {
             let from = s(r, "from_peer");
             let name = s(r, "from_name");
-            let who = if truthy(&name) { name } else { from.clone() };
+            let alias_of = |rid: &str| device(rid).map(|d| s(d, "alias")).filter(|a| truthy(a));
+            let who = if truthy(&name) { name } else { alias_of(&from).unwrap_or_else(|| from.clone()) };
+            let target = device(&s(r, "rustdesk_id")).map(|d| { let a = s(d, "alias"); if truthy(&a) { a } else { s(d, "hostname") } }).filter(|n| truthy(n)).unwrap_or_default();
             let t = r.val("conn_type").to_int();
             let tone = tones[(crc32(from.as_bytes()) as usize) % tones.len()];
             let created = ts_of(r, "created_at");
             json!({
                 "id": r.id(), "who": who, "initial": who.chars().next().map(|c| c.to_string()).unwrap_or_default(), "from_peer": from, "tone": tone,
-                "rustdesk_id": s(r, "rustdesk_id"), "link": client_link(c, &s(r, "rustdesk_id")).unwrap_or_default(),
+                "rustdesk_id": s(r, "rustdesk_id"), "target": target, "link": client_link(c, &s(r, "rustdesk_id")).unwrap_or_default(),
                 "type": t, "type_label": super::logs::conn_label(t), "disconnecting": !r.is_null("disconnect_requested_at"),
                 "created": created.map(crate::laravel::ts).unwrap_or_default(), "ago": created.map(|t| super::time::ago(t, ctx.now, true)).unwrap_or_default(),
             })

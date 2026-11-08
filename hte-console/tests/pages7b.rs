@@ -435,6 +435,37 @@ async fn the_device_page() {
     assert_eq!(h.get("/devices", &erin).await.status, 302);
 }
 
+/// CortenDesk 1.21.0 (#149): a device page also lists the sessions and file transfers the device started, with the device it reached;
+/// a person sees an outgoing row only when they see its target.
+#[tokio::test(flavor = "multi_thread")]
+async fn outgoing_sessions_on_the_device_page() {
+    let h = harness().await;
+    h.sql("insert into audit_connections (rustdesk_id, from_peer, from_name, ip, conn_type, created_at, closed_at) values ('1002', '1001', 'Front PC', '10.1.1.1', 0, '2025-10-25 03:10:00', '2025-10-25 03:12:05')");
+    h.sql("insert into audit_connections (rustdesk_id, from_peer, from_name, ip, conn_type, created_at, closed_at) values ('9999', '1001', 'Front PC', '10.1.1.1', 0, '2025-10-25 03:20:00', '2025-10-25 03:22:05')");
+    h.sql("insert into audit_file_transfers (rustdesk_id, from_peer, from_name, path, info, is_file, direction, file_count, ip, created_at, updated_at) values ('1002', '1001', 'Front PC', '/tmp/x', '{}', 1, 0, 1, '10.1.1.1', '2025-10-25 03:30:00', '2025-10-25 03:30:00')");
+    let admin = h.login(&sid("outgoing1"), 1, json!({}));
+    let body = h.get("/devices/1", &admin).await.body;
+    assert!(body.matches("Outgoing</span>").count() >= 3, "two connections and a transfer: {}", squash(&body));
+    assert!(body.contains(r#"<a href="/devices/2">BACK-PC</a>"#), "the device it reached is named and linked");
+    assert!(squash(&body).contains("Outgoing</span>9999") && !body.contains(r#"/devices/9999"#), "an unknown target is shown by ID, with no link");
+    // the target's own page lists the same session as incoming, as before
+    let body = h.get("/devices/2", &admin).await.body;
+    assert!(!body.contains("Outgoing</span>"), "{}", squash(&body));
+    // a person who sees device 1001 but not 1002 and 9999 sees none of the outgoing rows
+    h.sql(r#"update roles set permissions = '{"audit":"rw","device":"r"}' where id = 1"#);
+    h.sql("update users set role_id = 1 where id = 2");
+    h.sql("update devices set user_id = 2 where id = 1");
+    let dana = h.login(&sid("outgoing2"), 2, json!({}));
+    let r = h.get("/devices/1", &dana).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert!(r.body.contains("Recent connections"), "she may read the logs");
+    assert!(!r.body.contains("Outgoing</span>") && !r.body.contains("BACK-PC"), "{}", squash(&r.body));
+    // given 1002 too, she sees the sessions to it (and still not the ones to 9999)
+    h.sql("update devices set user_id = 2 where id = 2");
+    let r = h.get("/devices/1", &dana).await;
+    assert_eq!(r.body.matches("Outgoing</span>").count(), 2, "{}", squash(&r.body));
+}
+
 #[tokio::test]
 async fn the_users_pages() {
     let h = harness().await;
@@ -816,10 +847,15 @@ async fn the_overview_page() {
     let r = h.get("/dashboard/stats", &cookie).await;
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(r.body.contains("rd-stat-grid") && !r.body.contains("<html"));
+    // aliases (CortenDesk 1.22.0): a session without a name shows the controlling device's alias; the device reached shows its alias or host name
+    h.sql("insert into audit_connections (rustdesk_id, from_peer, ip, conn_type, created_at) values ('1002', '1001', '10.1.1.2', 0, datetime('now'))");
     let r = h.get("/dashboard/sessions", &cookie).await;
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(r.body.contains("Active Sessions") && !r.body.contains("<html"));
     assert!(r.body.contains("Disconnect"));
+    let page = squash(&r.body);
+    assert!(page.contains(r#"<span class="rd-cell-title text-truncate">Front PC</span><span class="rd-cell-sub text-truncate">1001</span>"#), "{page}");
+    assert!(page.contains(r#"<span class="rd-cell-title text-truncate">BACK-PC</span><a href"#), "{page}");
     let r = h.post_form("/dashboard/disconnect", &cookie, &[tok(), ("id", "1")]).await;
     assert_eq!(r.status, 302, "{}", r.body);
     assert_eq!(h.count("audit_connections where disconnect_requested_at is not null and disconnect_requested_by = 1"), 1);

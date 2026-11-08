@@ -30,7 +30,7 @@
                                     <div class="min-width-0"><span class="rd-cell-title text-truncate">{{ x.who }}</span><span class="rd-cell-sub text-truncate">{{ x.from_peer }}</span></div>
                                 </div>
                             </td>
-                            <td><a href="{{ x.link }}" title="Connect with RustDesk" class="fs-13" hx-boost="false">{{ x.rustdesk_id }}</a></td>
+                            <td>{% if x.target %}<span class="rd-cell-title text-truncate">{{ x.target }}</span>{% endif %}<a href="{{ x.link }}" title="Connect with RustDesk" class="fs-13" hx-boost="false">{{ x.rustdesk_id }}</a></td>
                             <td>
                                 {% if x.type == 1 %}<span class="badge bg-primary-subtle text-primary">File</span>
                                 {% elif x.type == 2 %}<span class="badge bg-warning-subtle text-warning">Port Fwd</span>
@@ -80,7 +80,7 @@
                         </div>
                         {% endif %}
                         <div class="rd-mini-foot">
-                            <a href="{{ x.link }}" title="Connect with RustDesk" class="fs-13 text-truncate" hx-boost="false">{{ x.rustdesk_id }}</a>
+                            <a href="{{ x.link }}" title="Connect with RustDesk" class="fs-13 text-truncate" hx-boost="false">{% if x.target %}{{ x.target }} · {% endif %}{{ x.rustdesk_id }}</a>
                             <span class="rd-mini-sub text-nowrap"><i class="rd-dot text-success"></i><span title="{{ x.created }}">{{ x.ago }}</span></span>
                         </div>
                     </div>
