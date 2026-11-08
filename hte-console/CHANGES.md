@@ -2,6 +2,29 @@
 
 New HTE code (AGPL-3.0), not a change to upstream. The fork-level statement is `../HTE.md`.
 
+## 2.4.0 (2026-11-08): the web client and console of CortenDesk 1.23.0, share links, About dialog
+`hbbs` is 1.5.1-hte.1 (`../HTE.md`). The bundle in `rdclient/` is upstream's 1.23.0 build (prebuilt, not rebuilt here; AGPL-3.0, notices kept; xterm.js
+with its licence in `rdclient/LICENSE-xterm.txt` and `NOTICE`), served with the same listed branding substitutions (one more: the Add to Home Screen manifest).
+- Web client: decoder stall replacement, software retry before a codec is disabled, a double-click opens a folder, the WebRTC upload drain, the Type
+  popover fits (all in the bundle). Phone and tablet: one docked bar, the phone's own keyboard, extra keys, gestures, pinch zoom, Trackpad mode,
+  automatic reconnect, Add to Home Screen. The page asks the keyboard to resize it and links the manifest and icon. The Terminal is the bundle's xterm.js page;
+  same sign-in and password rule as Connect.
+- Devices: a Strategy column (administrators only, sortable), IP sorts by address, shared hardware IDs of machines that both keep reporting are not
+  duplicates (clone fix), rejected devices are listed in the recycle bin and a taken ID says where the device is.
+- Strategies: Duplicate; a device's "Inherit" option names the strategy it inherits.
+- Device page: outgoing sessions (only to devices the person may see); Overview > Active sessions shows aliases.
+- Settings > Email: a footer line for outgoing mail.
+- About dialog: click the version in the sidebar (people who see Settings). Version, release date (`RELEASED_AT` in `src/lib.rs`: set it when tagging),
+  update available (the existing release check) and a link to the release notes.
+- **Share links** (CortenDesk 1.21.0's feature, under HTE's rules; `src/pages/share.rs`, tables `device_shares` and `device_share_sessions` by the own
+  migration `2026_11_08_900001`). A secret link `/s#<token>` opens the web client for ONE device for someone without an account; the device's accept
+  window decides (no password is ever sent). Off until Settings > Server "Share links" is on AND `HTE_REMOTE_SHARE_LINKS=1` is set. Only a signed-in
+  person who may reach the device makes one: administrators, or (Settings "Who may make links") anyone who may edit devices and reach that one. Listed on the
+  device page ("Share screen") for the maker and administrators, who can end them. The token is stored as its sha256 and shown once; expiry, ending, the
+  maker's reach and the switch are all enforced at hbbs through the policy (`scope.shares`, only present when there are live links). Audit:
+  `device.share.create`, `.revoke`, `.open` (system) in the console log; a session through a link is a normal connection from `share-<id>`.
+  Tests: `share_links` in `tests/pages7b.rs`, `tests/hte_share_links.rs` in the server.
+
 ## 2.3.0 (2026-11-04): the ID server and relay move to upstream 1.4.0; connection paths, Release ID, new devices incoming only
 `hbbs` is 1.4.0-hte.1 (upstream CortenDesk Server 1.3.0 and 1.4.0: `../HTE.md`). In the console:
 - **Connection paths** (CortenDesk 1.19's idea, written here). `hbbs` tags each request it sends a device (LAN, hole punch, WebRTC, relay) and RustDesk

@@ -14,8 +14,14 @@ release tag plus the commits described here; changes to upstream files are small
   `policy::check_initiator` and before the relay gate's `admit`, so the gate never names a malformed uuid; `tests/hte_relay_gate.rs`
   (`a_malformed_relay_uuid_is_dropped_before_the_gate`) shows a normal uuid still pairs and malformed ones do not, even from a person in reach.
   1.5.0 stops `hbbr` logging relay uuids; the gate's refusal line (`src/relay_server.rs`, marked `// HTE`) no longer names the uuid either.
-- 1.5.0's `cdw2` ticket (a share link's ticket) is accepted by `policy::ticket_valid` for the one device it names. Under per-person reach it
-  names no person, so until the share-link work below it is refused as "nobody signed in".
+- 1.5.0's `cdw2` ticket (a share link's ticket) is accepted by `policy::ticket_valid` for the one device it names, and HTE judges it further
+  (`hte_scope::check_share`, hook in `policy::check_initiator`): the console lists the LIVE share links in the policy's `scope.shares`
+  (link id -> device and expiry); a `cdw2` ticket passes only while its link is listed, names this very device and has not expired, and only
+  when the server admits approved devices only and the device is approved. Ending a link, its expiry, its maker losing reach or the switch
+  going off drop it from the list, so hbbs refuses it within one policy pull although the ticket (five minutes) is still valid. This holds
+  whether or not per-person reach is on. A share session is otherwise paired like any other, through the relay gate.
+  `tests/hte_share_links.rs` (new): live link reaches its device by punch and relay; a second device, an expired, an ended or an unknown link
+  are refused; open mode refuses; ending a link at the console closes it at hbbs.
 
 ## HTE Remote 2.3.0 (2026-11-04) on upstream CortenDesk Server 1.4.0 (1.3.0 and 1.4.0 merged)
 
