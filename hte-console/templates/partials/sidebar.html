@@ -170,7 +170,7 @@
                 </span>
             </span>
             {% endif %}
-            <span class="rd-sidebar-version-num">v{{ version }}</span>
+            <button type="button" class="rd-sidebar-version-num rd-about-open" data-bs-toggle="modal" data-bs-target="#rd-about" title="About HTE Remote">v{{ version }}</button>
             {% if update.upgrade %}
                 <a href="https://github.com/{{ update.repo }}/releases/tag/{{ update.tag_prefix }}{{ update.upgrade }}" target="_blank" rel="noopener"
                    class="rd-shell-badge"
@@ -179,3 +179,31 @@
         </div>
     {% endif %}
 </div>
+
+    {% if can.settings %}
+    <div class="modal fade" id="rd-about" tabindex="-1" aria-labelledby="rd-about-title" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered rd-about-dialog">
+            <div class="modal-content rd-about">
+                <button type="button" class="btn-close rd-about-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <img src="/assets/images/hte-remote.png?v={{ version }}" alt="" width="64" height="64" class="rd-about-logo">
+                <h5 class="rd-about-title" id="rd-about-title">HTE Remote</h5>
+                <div class="rd-about-version">Version {{ version }}</div>
+                <div class="rd-about-released">Released {{ update.released }}</div>
+                {% if update.upgrade %}
+                    <div class="rd-about-status rd-about-status-new"><i class="ri-download-cloud-2-line"></i><span>Version {{ update.upgrade }} is available</span></div>
+                    <a href="https://github.com/{{ update.repo }}/releases/tag/{{ update.tag_prefix }}{{ update.upgrade }}" target="_blank" rel="noopener" class="btn btn-primary btn-sm rd-about-notes">Release notes for {{ update.upgrade }} <i class="ri-arrow-right-up-line"></i></a>
+                {% else %}
+                    {% if update.enabled %}
+                        <div class="rd-about-status {{ 'rd-about-status-ok' if update.checked else 'rd-about-status-unknown' }}">
+                            {% if update.checked %}<i class="ri-check-line"></i><span>You are up to date</span>{% else %}<i class="rd-dot rd-dot-lg"></i><span>Release check unavailable</span>{% endif %}
+                        </div>
+                    {% endif %}
+                    <a href="https://github.com/{{ update.repo }}/releases/tag/{{ update.tag_prefix }}{{ version }}" target="_blank" rel="noopener" class="btn btn-light btn-sm rd-about-notes">Release notes for {{ version }} <i class="ri-arrow-right-up-line"></i></a>
+                {% endif %}
+                <div class="rd-about-foot">
+                    <p>Built on CortenDesk Server and CortenDesk by Marc Pope, AGPL-3.0, with HTE's changes. <a href="https://github.com/{{ update.repo }}/blob/main/NOTICE" target="_blank" rel="noopener">Notices</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}

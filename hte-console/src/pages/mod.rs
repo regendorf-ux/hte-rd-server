@@ -257,7 +257,7 @@ impl<'a> Ctx<'a> {
             "native_webclient": self.p.config.native_webclient,
             "webclient_url": self.p.config.webclient_url,
             "rdgen_url": String::from_utf8_lossy(&rdgen).into_owned(),
-            "update": {"enabled": self.p.config.update_check, "upgrade": upgrade, "checked": checked, "repo": crate::update_check::repo(), "tag_prefix": crate::update_check::TAG_PREFIX},
+            "update": {"enabled": self.p.config.update_check, "upgrade": upgrade, "checked": checked, "repo": crate::update_check::repo(), "tag_prefix": crate::update_check::TAG_PREFIX, "released": crate::RELEASED_AT},
             "flash_denied": self.flashed.get("denied").and_then(|v| v.as_str()).unwrap_or(""),
         }))
     }

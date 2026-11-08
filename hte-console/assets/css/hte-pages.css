@@ -45,3 +45,20 @@ form[style*="display:inline"] > button.rd-iconbtn, form[style*="display:contents
 /* Outgoing sessions on a device page (CortenDesk 1.21): the same purple as the console's other "outgoing" marks. */
 .badge.rd-badge-purple { background-color: rgba(139, 92, 246, 0.14); color: #8b5cf6; }
 [data-bs-theme="light"] .badge.rd-badge-purple { background-color: rgba(109, 40, 217, 0.14); color: #6d28d9; }
+
+/* About dialog (opened from the sidebar version) */
+.rd-about-open { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline dotted; }
+.rd-about-open:hover { color: var(--rd-shell-ink, inherit); }
+.rd-about { text-align: center; padding: 28px 24px 20px; }
+.rd-about-close { position: absolute; top: 12px; right: 12px; }
+.rd-about-logo { margin: 0 auto 10px; border-radius: 12px; }
+.rd-about-title { margin: 0; font-weight: 600; }
+.rd-about-version { font-size: 14px; margin-top: 2px; }
+.rd-about-released { font-size: 12px; opacity: .65; margin-bottom: 14px; }
+.rd-about-status { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; margin-bottom: 12px; }
+.rd-about-status-ok { color: var(--bs-success, #198754); }
+.rd-about-status-new { color: var(--bs-warning-text-emphasis, #997404); }
+.rd-about-status-unknown { opacity: .65; }
+.rd-about-notes { display: block; margin: 0 auto; width: fit-content; }
+.rd-about-foot { margin-top: 18px; font-size: 11.5px; opacity: .7; }
+.rd-about-foot p { margin: 0; }

@@ -8,6 +8,8 @@
 //! Phase 6: local backups (the previous console's archive format), restore, log and invitation pruning, and their daily scheduler entries.
 /// HTE Remote's version: the console's crate version is the version of the whole server image (`hte-rd-server:<this>`).
 pub const REMOTE_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The day this version was cut, shown in the About dialog. Set when the release is tagged.
+pub const RELEASED_AT: &str = "8 November 2026";
 
 pub mod admin;
 pub mod admin_ctl;

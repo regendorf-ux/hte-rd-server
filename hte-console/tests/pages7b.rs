@@ -743,6 +743,8 @@ async fn the_settings_page() {
     assert_eq!(r.status, 200, "{}", r.body);
     let page = squash(&r.body);
     assert!(page.contains("RustDesk Server") && page.contains("Per-person reach: Off"));
+    // the About dialog hangs off the sidebar version
+    assert!(page.contains("data-bs-target=\"#rd-about\"") && page.contains("id=\"rd-about\"") && page.contains(&format!("Version {}", hte_console::REMOTE_VERSION)) && page.contains("Released "));
     for tab in ["Client Setup", "Security", "SSO", "Email", "Notifications", "Maintenance", "Backups"] {
         assert!(page.contains(tab), "{tab}");
     }
