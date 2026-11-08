@@ -7,6 +7,16 @@ is licensed under the GNU AGPL-3.0. This file lists the modifications and their 
 upstream's own record stays in `CHANGES.md`, and the credits are in `NOTICE` and `hte-console/NOTICE`. Branch `hte` is upstream's
 release tag plus the commits described here; changes to upstream files are small hooks marked `// HTE`.
 
+## HTE Remote 2.4.0 on upstream CortenDesk Server 1.5.1 (1.5.0 and 1.5.1 merged)
+
+- Merged upstream 1.5.0 and 1.5.1 (hbbs 1.5.1-hte.1). 1.5.1 drops a `RequestRelay` or `RelayResponse` whose relay uuid is empty, over 128 bytes
+  or anything but ASCII letters, digits, `-` and `_` (the empty acknowledgement of a `RequestRelay` still passes). The drop comes before
+  `policy::check_initiator` and before the relay gate's `admit`, so the gate never names a malformed uuid; `tests/hte_relay_gate.rs`
+  (`a_malformed_relay_uuid_is_dropped_before_the_gate`) shows a normal uuid still pairs and malformed ones do not, even from a person in reach.
+  1.5.0 stops `hbbr` logging relay uuids; the gate's refusal line (`src/relay_server.rs`, marked `// HTE`) no longer names the uuid either.
+- 1.5.0's `cdw2` ticket (a share link's ticket) is accepted by `policy::ticket_valid` for the one device it names. Under per-person reach it
+  names no person, so until the share-link work below it is refused as "nobody signed in".
+
 ## HTE Remote 2.3.0 (2026-11-04) on upstream CortenDesk Server 1.4.0 (1.3.0 and 1.4.0 merged)
 
 - Merged upstream 1.3.0 and 1.4.0 (hbbs 1.4.0-hte.1): desktop clients over WebSocket or TCP (`src/stream_connection.rs`), connection paths

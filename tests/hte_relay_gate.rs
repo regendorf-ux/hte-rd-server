@@ -180,3 +180,28 @@ async fn hbbr_pairs_only_what_hbbs_admitted() {
     sleep(Duration::from_millis(300)).await;
     assert!(pairs("gate-admitted").await, "an admitted uuid pairs");
 }
+
+/// Upstream 1.5.1 drops a request whose uuid is empty, over 128 bytes or has
+/// anything but ASCII letters, digits, `-` and `_`. The drop comes before the
+/// per-person check and the gate: a person who may reach the device, with a
+/// malformed uuid, still gets no pairing, and a normal uuid still pairs.
+#[tokio::test]
+async fn a_malformed_relay_uuid_is_dropped_before_the_gate() {
+    let url = start_console();
+    let dir = tempfile::tempdir().unwrap();
+    let (_hbbs, _hbbr) = spawn(dir.path(), &url).await;
+    let _b = register("gate-b").await;
+
+    // A normal (v4-shaped) uuid from an allowed person pairs.
+    let normal = "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12";
+    let _c = request_relay_via_hbbs("gate-b", normal, "token-a").await;
+    sleep(Duration::from_millis(300)).await;
+    assert!(pairs(normal).await, "a normal uuid still pairs");
+
+    let too_long = "a".repeat(129);
+    for bad in ["bad uuid", "e4c181d0\u{e9}", "{e4c181d0}", "id.with.dots", too_long.as_str()] {
+        let _c = request_relay_via_hbbs("gate-b", bad, "token-a").await;
+        sleep(Duration::from_millis(300)).await;
+        assert!(!pairs(bad).await, "a malformed uuid must not pair: {bad:?}");
+    }
+}

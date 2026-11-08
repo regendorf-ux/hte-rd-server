@@ -14,6 +14,38 @@ of upstream so the two are never mistaken for each other.
 
 ---
 
+## 1.5.1 (2026-11-05)
+
+### hbbs: relay uuids checked before forwarding (2026-11-05)
+
+- `RequestRelay` and `RelayResponse` with a uuid that is empty, longer than
+  128 bytes, or has anything but ASCII letters, digits, `-` and `_` are
+  dropped (issue #21). The peer sends the uuid on to the relay server the
+  message names, so line breaks or control bytes could otherwise reach that
+  service as is. A `RelayResponse` with both uuid and relay server empty (a
+  peer's ack) still passes. Upstream rustdesk-server added the same check on
+  2026-11-04, and RustDesk clients now refuse the same uuids themselves.
+- The drop is logged with the uuid's length, not the uuid.
+- `src/rendezvous_server.rs`: `validate_relay_uuid`, `validate_relay_response`.
+
+## 1.5.0 (2026-11-04)
+
+### hbbs: share link tickets reach one device only (2026-11-04)
+
+- New ticket form `cdw2.<expiry>.<target>.<subject>.<hmac>` for the
+  console's share links (console PR #142). `hbbs` admits it only for a punch
+  hole or relay request to the device it names, so someone holding a share
+  link cannot use its ticket to reach any other device. `cdw1` tickets are
+  unchanged. Older `hbbs` does not know `cdw2` and treats it like no ticket:
+  share links then work in open mode only.
+- `src/policy.rs`: `ticket_valid` takes the request's target.
+
+### hbbr: relay session uuids no longer logged (2026-11-04)
+
+- The "New relay request" and "got paired" lines log the client address
+  only. The uuid pairs the two halves of a session, so it stays out of logs
+  (CodeQL alert 92).
+
 ## 1.4.0 (2026-11-04)
 
 ### hbbs: UDP hole punching and IPv6 peer-to-peer for RustDesk 1.5 (2026-11-04)
