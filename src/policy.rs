@@ -243,6 +243,9 @@ pub fn check_initiator(token: &str, ip: IpAddr, target: &str) -> Result<(), &'st
     };
     if !token.is_empty() {
         if ticket_valid(token, &secret, target) {
+            if token.starts_with(BOUND_TICKET_PREFIX) { // HTE: a share link, judged by the live link list
+                return hte::check_share(&snap.scope, token, target, snap.strict() && snap.approved(target));
+            }
             return hte::check(&snap.scope, &hte::Person::Web(token), target, ip, "web"); // HTE
         }
         let hash = hex(&sha256::hash(token.as_bytes()).0);

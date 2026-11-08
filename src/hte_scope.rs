@@ -65,7 +65,21 @@ pub struct Scope {
     /// sha256 hex of a console access token -> console user id.
     #[serde(default)]
     pub token_users: HashMap<String, String>,
+    /// Share links that are live right now, by link id. A link missing here is ended, expired or its creator
+    /// lost reach, whatever its ticket still says.
+    #[serde(default)]
+    pub shares: HashMap<String, ShareLink>,
 }
+
+/// One live share link: the one device it admits and when it lapses (unix seconds).
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct ShareLink {
+    pub device: String,
+    pub expires: u64,
+}
+
+pub const DENY_SHARE: &str = "This share link has ended.";
+pub const DENY_SHARE_MODE: &str = "Share links work only while this server admits approved devices only.";
 
 /// Who is asking, as `policy::check_initiator` found them.
 pub enum Person<'a> {
@@ -101,6 +115,25 @@ impl Scope {
 /// expiry are the caller's business (`policy::ticket_valid`).
 pub fn web_user(ticket: &str) -> Option<&str> {
     ticket.split('.').nth(2)?.strip_prefix("web-")
+}
+
+/// `cdw2.<expiry>.<target>.share-<link id>.<hmac>` -> the link id.
+pub fn share_id(ticket: &str) -> Option<&str> {
+    let mut p = ticket.split('.');
+    (p.next()? == "cdw2").then_some(())?;
+    p.nth(2)?.strip_prefix("share-")
+}
+
+/// A share ticket is good only while its link is live in the snapshot and names this very device, in approved-only
+/// mode and for an approved device. Judged whether or not per-person reach is on: a link never rides on a person's scope.
+pub fn check_share(scope: &Scope, ticket: &str, target: &str, strict_and_approved: bool) -> Result<(), &'static str> {
+    if !strict_and_approved {
+        return Err(DENY_SHARE_MODE);
+    }
+    match share_id(ticket).and_then(|id| scope.shares.get(id)) {
+        Some(l) if l.device == target && l.expires > now_secs() => Ok(()),
+        _ => Err(DENY_SHARE),
+    }
 }
 
 /// May `person`, sitting at `from_device`, reach `target`? `ip` is the TCP
@@ -263,7 +296,22 @@ mod tests {
         users.insert("8".to_owned(), ScopeUser { name: "jdoe".into(), all: true, devices: Default::default() });
         let mut token_users = HashMap::new();
         token_users.insert("hash-7".to_owned(), "7".to_owned());
-        Scope { enforce: true, users, token_users }
+        Scope { enforce: true, users, token_users, shares: Default::default() }
+    }
+
+    #[test]
+    fn a_share_ticket_is_good_for_its_live_link_and_device_only() {
+        let mut s = scope();
+        s.shares.insert("7".into(), ShareLink { device: "t1".into(), expires: now_secs() + 60 });
+        s.shares.insert("8".into(), ShareLink { device: "t1".into(), expires: now_secs() - 1 });
+        let t = |id: &str, dev: &str| format!("cdw2.9999999999.{dev}.share-{id}.sig");
+        assert_eq!(share_id(&t("7", "t1")), Some("7"));
+        assert_eq!(share_id("cdw1.1.share-7.x"), None);
+        assert!(check_share(&s, &t("7", "t1"), "t1", true).is_ok());
+        assert_eq!(check_share(&s, &t("7", "t1"), "t2", true), Err(DENY_SHARE)); // a second device
+        assert_eq!(check_share(&s, &t("8", "t1"), "t1", true), Err(DENY_SHARE)); // expired
+        assert_eq!(check_share(&s, &t("9", "t1"), "t1", true), Err(DENY_SHARE)); // ended: not in the snapshot
+        assert_eq!(check_share(&s, &t("7", "t1"), "t1", false), Err(DENY_SHARE_MODE)); // open mode
     }
 
     fn ip() -> IpAddr {
