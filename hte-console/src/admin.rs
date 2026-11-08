@@ -432,7 +432,7 @@ pub fn token_allows(token: &Row, resource: &str, required: &str) -> Result<bool,
 
 /// `User::consoleAllows($resource, $level)` for the token owner: administrators pass; a role-holder is answered by
 /// the role's matrix; a user with no role gets the legacy baseline (`token` is none there).
-fn console_allows(c: &Connection, user: &Row, resource: &str, level: &str) -> Result<bool, Fault> {
+pub(crate) fn console_allows(c: &Connection, user: &Row, resource: &str, level: &str) -> Result<bool, Fault> {
     if user.val("is_admin").to_bool() {
         return Ok(true);
     }

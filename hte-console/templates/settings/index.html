@@ -143,6 +143,19 @@
                         <div class="form-text">Enforced by the ID server. A signed-in user can start a session only to a device this console shows them: the devices assigned to them and the device groups granted to them or to their user groups. Administrators reach every device. A client that is not signed in cannot start sessions. Refused attempts appear under Logs &rarr; Alarms and on the device's page. Takes effect within a few seconds; sessions already running are not cut. Needs <strong>Approved devices only</strong> and the HTE build of the ID server.</div>
                         <div class="form-text {{ scope.tone }}" id="hte-scope-status"><i class="ri-shield-user-line me-1"></i>Per-person reach: {{ scope.text }}</div>
                         <div class="form-check form-switch mt-3">
+                            <input class="form-check-input" type="checkbox" role="switch" id="hteShareLinks" name="hte_share_links" value="1"{{ ' checked' if v.hte_share_links else '' }}>
+                            <label class="form-check-label" for="hteShareLinks">Share links</label>
+                        </div>
+                        <div class="form-text">A secret link that opens the web client for one device, for someone without an account; someone at the device accepts them. Off until you turn it on here <strong>and</strong> the server is started with <code>HTE_REMOTE_SHARE_LINKS=1</code>. Needs <strong>Approved devices only</strong> and the HTE build of the ID server. A link opens only its device, can be ended at any time, and stops within seconds when it is ended, expires, or its maker loses reach to the device.</div>
+                        <div class="form-text {{ 'text-success' if share_env else 'text-danger' }}" id="hte-share-status"><i class="ri-share-forward-line me-1"></i>{{ 'The server allows share links (HTE_REMOTE_SHARE_LINKS is set).' if share_env else 'The server does not allow share links: HTE_REMOTE_SHARE_LINKS is not set.' }}</div>
+                        <div class="d-flex align-items-center gap-2 mt-2">
+                            <label class="form-label mb-0" for="hteShareWho">Who may make links</label>
+                            <select class="form-select form-select-sm" style="max-width: 320px;" id="hteShareWho" name="hte_share_who">
+                                <option value="admin"{{ ' selected' if v.hte_share_who == 'admin' else '' }}>Administrators only</option>
+                                <option value="reach"{{ ' selected' if v.hte_share_who == 'reach' else '' }}>Anyone who may edit the device and reach it</option>
+                            </select>
+                        </div>
+                        <div class="form-check form-switch mt-3">
                             <input class="form-check-input" type="checkbox" role="switch" id="htePasswords" name="hte_passwords" value="1"{{ ' checked' if v.hte_passwords else '' }}>
                             <label class="form-check-label" for="htePasswords">Each computer gets its own password, made and changed by the console</label>
                         </div>

@@ -74,6 +74,7 @@ pub struct Own {
 pub const OWN: &[Own] = &[
     Own { name: "2026_10_25_900001_create_hte_console_sessions_table", sql: crate::pages::websession::SCHEMA },
     Own { name: "2026_11_04_900001_create_relay_sessions_and_connection_paths", sql: crate::path::SCHEMA },
+    Own { name: "2026_11_08_900001_create_device_shares_tables", sql: crate::pages::share::SCHEMA },
 ];
 
 #[derive(Debug, Default, PartialEq, Eq)]

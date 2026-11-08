@@ -192,6 +192,84 @@
                 </div>
             {% endif %}
 
+            {# HTE: share links #}
+            {% if shares %}
+                <div class="card" id="share">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0"><i class="ri-share-forward-line me-1"></i>Share screen</h5>
+                        {% if shares.can_create and not shares.form and not shares.new_link %}
+                            <a href="{{ url }}?share=1#share" class="btn btn-sm btn-primary"><i class="ri-add-line me-1"></i>New share link</a>
+                        {% endif %}
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted fs-13">Send someone a secret link to this device. It opens the web client in their browser: no account and no RustDesk needed. {% if shares.admin_only %}Only administrators can make links, and only for devices they may reach.{% else %}Only people who may reach and edit this device can make links.{% endif %}</p>
+                        {% if shares.new_link %}
+                            <div class="alert alert-success" role="status" id="share-new">
+                                <p class="fw-semibold mb-1">Copy this link now</p>
+                                <p class="fs-13 mb-2">It is shown only once. Anyone with the link can ask to connect until it expires or you end it. Someone at the device still has to accept them.</p>
+                                <div class="input-group">
+                                    <input type="text" class="form-control font-monospace fs-13" readonly value="{{ shares.new_link }}" onfocus="this.select()">
+                                    <button type="button" class="btn btn-outline-light" onclick="var i=this.parentNode.querySelector('input');i.select();navigator.clipboard&&navigator.clipboard.writeText(i.value)"><i class="ri-file-copy-line me-1"></i>Copy</button>
+                                    <a class="btn btn-outline-light" href="{{ url }}#share">Done</a>
+                                </div>
+                            </div>
+                        {% endif %}
+                        {% if shares.can_create and (shares.form or shares.error or share_open) %}
+                            <form method="post" action="{{ url }}/do" class="border rounded p-3 mb-3" id="share-form">
+                                <input type="hidden" name="_token" value="{{ csrf }}" autocomplete="off">
+                                <input type="hidden" name="do" value="share-create">
+                                <div class="row g-3">
+                                    <div class="col-12">
+                                        <label class="form-label" for="share-label">For whom</label>
+                                        <input id="share-label" name="label" type="text" class="form-control{{ ' is-invalid' if shares.error else '' }}" maxlength="100" placeholder="e.g. Jan, support call" value="{{ shares.form.label if shares.form else '' }}" required>
+                                        {% if shares.error %}<div class="invalid-feedback">{{ shares.error }}</div>{% endif %}
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label" for="share-duration">Valid for</label>
+                                        <select id="share-duration" name="duration" class="form-select">
+                                            {% for dur in shares.durations %}<option value="{{ dur.key }}"{{ ' selected' if (shares.form.duration if shares.form else '1h') == dur.key else '' }}>{{ dur.label }}</option>{% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label" for="share-viewers">Viewers at the same time</label>
+                                        <input id="share-viewers" name="viewers" type="number" min="1" max="{{ shares.max_viewers }}" class="form-control" value="{{ shares.form.viewers if shares.form and shares.form.viewers else '1' }}">
+                                    </div>
+                                    <div class="col-12"><div class="form-text">The viewer connects without a password, so someone at the device has to accept them in the accept window, where keyboard, clipboard and files can be turned off. The link opens only this device and can be ended here at any time.</div></div>
+                                </div>
+                                <div class="d-flex gap-2 mt-3">
+                                    <button type="submit" class="btn btn-sm btn-primary">Create link</button>
+                                    <a class="btn btn-sm btn-outline-light" href="{{ url }}#share">Cancel</a>
+                                </div>
+                            </form>
+                        {% endif %}
+                        {% for it in shares.items %}
+                            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 py-2 border-top">
+                                <div class="min-width-0">
+                                    <span class="fw-semibold">{{ it.label }}</span>
+                                    {% if it.state == 'active' %}
+                                        <span class="badge bg-success-subtle text-success ms-1">Active</span>
+                                        {% if it.watching > 0 %}<span class="badge bg-info-subtle text-info ms-1"><i class="ri-eye-line me-1"></i>{{ it.watching }} watching</span>{% endif %}
+                                    {% else %}
+                                        <span class="badge bg-secondary-subtle text-secondary ms-1">{{ 'Ended' if it.state == 'ended' else 'Expired' }}</span>
+                                    {% endif %}
+                                    <span class="d-block fs-13 text-muted">{{ 'Up to ' ~ it.max ~ ' viewers' if it.max > 1 else '1 viewer' }}{% if it.expires %} · {{ it.expires }}{% endif %} · {{ it.last_used }}{% if it.maker %} · {{ it.maker }}{% endif %}</span>
+                                </div>
+                                {% if it.can_end %}
+                                    <form method="post" action="{{ url }}/do">
+                                        <input type="hidden" name="_token" value="{{ csrf }}" autocomplete="off">
+                                        <input type="hidden" name="do" value="share-end">
+                                        <input type="hidden" name="share" value="{{ it.id }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" data-rd-confirm="End this share link? Open share pages disconnect within half a minute."><i class="ri-close-circle-line me-1"></i>End</button>
+                                    </form>
+                                {% endif %}
+                            </div>
+                        {% else %}
+                            <p class="text-muted mb-0">No share links for this device.</p>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% endif %}
+
             {# Note: the one editable field here. #}
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">

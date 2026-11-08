@@ -144,7 +144,7 @@ async fn the_schema_check_is_what_start_up_runs() {
     let h = harness().await;
     let c = Connection::open(&h.db_path).unwrap();
     let n: i64 = c.query_row(r#"select count(*) from "migrations""#, [], |r| r.get(0)).unwrap();
-    assert_eq!(n, 43, "the previous console's 41 rows and ours");
+    assert_eq!(n, 44, "the previous console's 41 rows and ours");
     let out = hte_console::maintenance::status(&c, "hte-remote-cache-", 1_800_000_000).unwrap();
     assert!(out.contains("migrations_php=41/41") && out.contains("migrations_own_pending=0") && out.contains("migrations_unknown=0"), "{out}");
     assert!(out.contains("devices=0") && out.contains("scheduler_heartbeat_age_s=?"), "{out}");

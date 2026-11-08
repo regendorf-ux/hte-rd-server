@@ -33,6 +33,7 @@ pub mod websession;
 pub mod api_tokens;
 pub mod backups;
 pub mod settings;
+pub mod share;
 pub mod strategies;
 pub mod unavailable;
 pub mod webclient;
@@ -923,6 +924,7 @@ pub fn routes_with(n: Arc<Native>, php: Option<Router>, own: websession::OwnConf
     r = r.route("/downloads/*rest", any(not_found));
     r = r.route("/storage/*rest", any(not_found));
     r = login::routes(r);
+    r = share::routes(r);
     r = r.route("/assets/*path", any(asset));
     r = r.route("/rdclient/*path", any(rdclient));
     // The previous console's `public/robots.txt` and its empty `public/favicon.ico`, the two files its web server served beside /assets (phase 9)

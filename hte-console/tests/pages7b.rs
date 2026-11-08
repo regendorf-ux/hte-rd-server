@@ -74,6 +74,7 @@ async fn harness() -> H {
     let c = Connection::open(&db_path).unwrap();
     c.execute_batch(include_str!("schema_live.sql")).unwrap();
     c.execute_batch(hte_console::path::SCHEMA).unwrap(); // the own migration, as the service has run it
+    c.execute_batch(hte_console::pages::share::SCHEMA).unwrap();
     c.execute_batch(SEED).unwrap();
     let hash = laravel::hash_make(b"oldpass123").unwrap();
     for (id, username, name, email, admin, active, role) in [
@@ -744,7 +745,7 @@ async fn the_settings_page() {
     let page = squash(&r.body);
     assert!(page.contains("RustDesk Server") && page.contains("Per-person reach: Off"));
     // the About dialog hangs off the sidebar version
-    assert!(page.contains("data-bs-target=\"#rd-about\"") && page.contains("id=\"rd-about\"") && page.contains(&format!("Version {}", hte_console::REMOTE_VERSION)) && page.contains("Released "));
+    assert!(page.contains("data-bs-target=\"#rd-about\"") && page.contains("id=\"rd-about\"") && page.contains(&format!("You are running {}", hte_console::REMOTE_VERSION)) && page.contains("Released "));
     for tab in ["Client Setup", "Security", "SSO", "Email", "Notifications", "Maintenance", "Backups"] {
         assert!(page.contains(tab), "{tab}");
     }
@@ -1286,4 +1287,124 @@ async fn backups_off_site_copy_and_upload() {
     let r = h.post_file("/settings/backups/upload", &admin, "upload", "x.tar", b"not a tar").await;
     assert_eq!(r.status, 302);
     assert!(h.get("/settings?tab=backups", &admin).await.body.contains("That file is not an HTE Remote backup."));
+}
+
+// ------------------------------------------------------------------------------------------------ share links ---
+
+fn share_token(body: &str) -> String {
+    let i = body.find("/s#").expect("the link is shown once") + 3;
+    body[i..i + 64].to_string()
+}
+
+async fn share_start(h: &H, token: &str) -> Resp {
+    h.go("POST", "/s/start", None, Some("application/json"), &format!(r#"{{"token":"{token}"}}"#), &[]).await
+}
+
+#[tokio::test]
+async fn share_links() {
+    std::env::set_var("HTE_REMOTE_SERVER_SECRET", "test-link-secret");
+    let h = harness().await;
+    let admin = h.login(&sid("share1"), 1, json!({}));
+    let policy = |h: &H| -> Value { serde_json::from_str(&hte_console::reach::server_policy(&h.db(), NOW).unwrap()).unwrap() };
+    let create = |label: &'static str| vec![tok(), ("do", "share-create"), ("label", label), ("duration", "1h"), ("viewers", "1")];
+
+    // off by default: no card, no link can be made, the viewer page is not there, and the policy is the old one
+    std::env::set_var("HTE_REMOTE_SHARE_LINKS", "1");
+    assert!(!h.get("/devices/1", &admin).await.body.contains("Share screen"));
+    assert_eq!(h.post_form("/devices/1/do", &admin, &create("Jan")).await.status, 404);
+    assert_eq!(h.get("/s", &admin).await.status, 404);
+    assert_eq!(h.count("device_shares"), 0);
+    assert!(policy(&h)["scope"].get("shares").is_none());
+
+    // on: the card is there, and an administrator makes a link, shown once
+    h.sql("insert into settings (key, value, created_at, updated_at) values ('hte_share_links', '1', '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
+    assert!(h.get("/devices/1", &admin).await.body.contains("Share screen"));
+    let r = h.post_form("/devices/1/do", &admin, &create("Jan, printer")).await;
+    assert_eq!(r.status, 302, "{}", r.body);
+    let page = h.get("/devices/1", &admin).await.body;
+    let token = share_token(&page);
+    assert!(page.contains("Jan, printer") && page.contains("Copy this link now"));
+    assert!(!h.get("/devices/1", &admin).await.body.contains(&token), "the link is shown once");
+    assert_eq!(h.count(&format!("device_shares where token_hash = '{token}'")), 0);
+    assert_eq!(h.count("console_audits where action = 'device.share.create'"), 1);
+    // a bad form makes nothing
+    let r = h.post_form("/devices/1/do", &admin, &[tok(), ("do", "share-create"), ("label", ""), ("duration", "1h"), ("viewers", "1")]).await;
+    assert_eq!(r.status, 302);
+    assert_eq!(h.count("device_shares"), 1);
+
+    // hbbs is told: this link, this one device, its expiry; nothing else is in the policy block's other parts
+    let p = policy(&h);
+    let id = h.text("select cast(id as text) from device_shares limit 1");
+    assert_eq!(p["scope"]["shares"][&id]["device"], "1001");
+    assert_eq!(p["scope"]["shares"][&id]["expires"], NOW + 3600);
+
+    // the viewer page and the start: the ticket names the device and the link, the viewer sends no password
+    let r = h.get("/s", &admin).await;
+    assert_eq!(r.status, 200);
+    assert!(r.headers.get("referrer-policy").is_some() && r.headers.get("x-frame-options").is_some());
+    let r = share_start(&h, &token).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    let j: Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(j["client"]["peerId"], "1001");
+    assert_eq!(j["client"]["myId"], format!("share-{id}"));
+    let t = j["client"]["signalToken"].as_str().unwrap().to_string();
+    let parts: Vec<&str> = t.split('.').collect();
+    assert_eq!((parts[0], parts[2], parts[3]), ("cdw2", "1001", format!("share-{id}").as_str()), "a ticket bound to the device and the link: {t}");
+    assert!(parts[1].parse::<i64>().unwrap() <= NOW + 300, "short-lived");
+    assert!(!r.body.contains("password"));
+    assert_eq!(h.count("console_audits where action = 'device.share.open'"), 1, "the opening is in the audit log");
+    // one viewer at a time
+    assert_eq!(share_start(&h, &token).await.status, 409);
+    // an unknown link is not told apart from an ended one
+    assert_eq!(share_start(&h, &"0".repeat(64)).await.status, 404);
+    // the open page pings: fresh ticket while the link lives
+    let key = j["session"].as_str().unwrap();
+    let ping = |h: &H| { let body = format!(r#"{{"token":"{token}","session":"{key}"}}"#); let h2 = h.url.clone(); let c = h.client.clone(); async move { c.post(format!("{h2}/s/ping")).header("content-type", "application/json").body(body).send().await.unwrap().status().as_u16() } };
+    assert_eq!(ping(&h).await, 200);
+
+    // a session through a link shows in Connections, named for the link
+    h.sql(&format!("insert into audit_connections (rustdesk_id, from_peer, from_name, ip, conn_type, created_at) values ('1001', 'share-{id}', 'Jan, printer (share link)', '198.18.9.9', 0, '2025-10-25 03:10:00')"));
+    assert!(h.get("/logs/connections", &admin).await.body.contains("Jan, printer (share link)"));
+
+    // ending it (by an administrator): gone from the policy, refused at the page, the open page is told
+    let r = h.post_form("/devices/1/do", &admin, &[tok(), ("do", "share-end"), ("share", &id)]).await;
+    assert_eq!(r.status, 302);
+    assert!(policy(&h)["scope"].get("shares").is_none(), "ended at the ID server on its next pull");
+    assert_eq!(share_start(&h, &token).await.status, 404);
+    assert_eq!(ping(&h).await, 410);
+    assert_eq!(h.count("console_audits where action = 'device.share.revoke'"), 1);
+
+    // expired: refused although nothing was ended
+    let r = h.post_form("/devices/1/do", &admin, &create("Maria")).await;
+    assert_eq!(r.status, 302);
+    let token2 = share_token(&h.get("/devices/1", &admin).await.body);
+    assert_eq!(share_start(&h, &token2).await.status, 200);
+    h.sql(&format!("update device_shares set expires_at = '{}' where id != {id}", laravel::ts(NOW - 1)));
+    assert!(policy(&h)["scope"].get("shares").is_none());
+    assert_eq!(share_start(&h, &token2).await.status, 404);
+
+    // who may make links: administrators only, until Settings says otherwise; and only for devices they may reach
+    let dana = h.login(&sid("share2"), 2, json!({})); // owns 1001 and 1003, not 1002
+    assert_eq!(h.post_form("/devices/1/do", &dana, &create("Dana")).await.status, 403, "administrators only by default");
+    assert!(!h.get("/devices/1", &dana).await.body.contains("New share link"));
+    h.sql("insert into settings (key, value, created_at, updated_at) values ('hte_share_who', 'reach', '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
+    assert_eq!(h.post_form("/devices/2/do", &dana, &create("Dana")).await.status, 404, "a device outside her reach is not there for her");
+    assert_eq!(h.count("device_shares where label = 'Dana'"), 0);
+    assert_eq!(h.post_form("/devices/1/do", &dana, &create("Dana")).await.status, 302);
+    let token3 = share_token(&h.get("/devices/1", &dana).await.body);
+    assert_eq!(share_start(&h, &token3).await.status, 200);
+    // she cannot end a link someone else made, and the administrator can end hers
+    let other = h.text("select cast(id as text) from device_shares where label = 'Maria'");
+    assert_eq!(h.post_form("/devices/1/do", &dana, &[tok(), ("do", "share-end"), ("share", &other)]).await.status, 404);
+    // she loses the device: her link stops working at the ID server on the next pull
+    assert!(policy(&h)["scope"]["shares"].as_object().unwrap().len() == 1);
+    h.sql("update devices set user_id = null where id = 1");
+    assert!(policy(&h)["scope"].get("shares").is_none(), "the creator's reach decides");
+    assert_eq!(share_start(&h, &token3).await.status, 404);
+    // the switch off ends them all
+    h.sql("update devices set user_id = 2 where id = 1");
+    assert!(policy(&h)["scope"].get("shares").is_some());
+    h.sql("update settings set value = '0' where key = 'hte_share_links'");
+    assert!(policy(&h)["scope"].get("shares").is_none());
+    assert_eq!(share_start(&h, &token3).await.status, 404);
 }

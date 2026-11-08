@@ -71,7 +71,7 @@ fn no_old_name_where_a_person_reads_it() {
             }
             // an allowed phrase counts in a comment, or in the files whose job it is (the credit, the web client's replacements, a slug test)
             let fname = f.file_name().unwrap().to_str().unwrap();
-            let owner = ["webclient.rs", "cache.rs", "index.html"].contains(&fname);
+            let owner = ["webclient.rs", "cache.rs", "index.html", "sidebar.html"].contains(&fname);
             let comment = was_in_block || is_comment(line);
             if (comment || owner) && ALLOWED.iter().any(|a| line.contains(a)) {
                 continue;

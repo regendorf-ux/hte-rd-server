@@ -203,6 +203,12 @@ pub fn server_policy(c: &Connection, now: i64) -> Result<String, Fault> {
     }
     let mode = if db::setting(c, "server_access_mode", "open")? == b"approved" { "approved" } else { "open" };
     let ip_match = db::setting(c, "server_ip_match", "0")? == b"1";
+    // HTE: the live share links ride in the scope block, only when there are any (the block is unchanged otherwise)
+    let mut scope = policy_block(c, now)?;
+    if let Some(shares) = crate::pages::share::live_policy(c, now)? {
+        scope.pop();
+        scope.push_str(&format!(r#","shares":{shares}}}"#));
+    }
     Ok(format!(
         r#"{{"mode":{},"allow":{},"incoming_only":{},"tokens":{},"ip_match":{},"scope":{}}}"#,
         enc(&Val::str(mode))?,
@@ -210,7 +216,7 @@ pub fn server_policy(c: &Connection, now: i64) -> Result<String, Fault> {
         enc(&Val::Arr(incoming_only))?,
         ksorted(tokens)?,
         ip_match,
-        policy_block(c, now)?
+        scope
     ))
 }
 

@@ -364,6 +364,7 @@ pub fn render(ctx: &Ctx, c: &Connection, id: i64, status: u16, modal: Modal, req
         "twins": twin_items, "twin_count": twin_count, "twin_first": twin_first,
         "duplicate_result": devices::flash(ctx, "duplicate_result"),
         "reach": reach,
+        "shares": super::share::card(ctx, c, &device)?, "share_open": q(req, "share") == "1",
         "note_editing": note_editing, "note_error": note_errors,
         "note_value": if note_value.is_empty() { s(&device, "note") } else { note_value },
         "ab_open": ab_open, "addable": addable, "ab_error": devices::flash(ctx, "ab_error"), "ab_result": devices::flash(ctx, "ab_result"),
@@ -427,6 +428,8 @@ pub fn act(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
             audit(ctx, c, "device.update", &format!("Updated note on device {rid}"), Some("device"), Some(&rid))?;
             Ok(back)
         }
+        "share-create" => super::share::create(ctx, c, &device, &body, &url),
+        "share-end" => super::share::end(ctx, c, &device, &body, &url),
         "add-book" => {
             if !ctx.allows("address_book", "rw") {
                 return Ok(abort(403));

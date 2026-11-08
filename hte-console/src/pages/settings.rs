@@ -47,12 +47,12 @@ const DAY_CHOICES: &[(i64, &str)] = &[(7, "Every 7 days"), (30, "Every 30 days")
 
 const STRINGS: &[&str] = &[
     "id_server", "relay_server", "public_key", "rdgen_url", "client_url_scheme", "server_access_mode", "oidc_discovery_url", "oidc_public_base_url", "oidc_client_id", "oidc_scopes",
-    "oidc_button_label", "oidc_new_user_policy", "oidc_allowed_domains", "smtp_host", "smtp_encryption", "smtp_username", "smtp_from_address", "smtp_from_name", "smtp_footer", "apprise_mode",
+    "oidc_button_label", "oidc_new_user_policy", "oidc_allowed_domains", "smtp_host", "smtp_encryption", "smtp_username", "smtp_from_address", "smtp_from_name", "smtp_footer", "hte_share_who", "apprise_mode",
     "online_window", "log_retention_days", "default_device_group_id", "oidc_default_group_id", "smtp_port", "email_trusted_device_days", "apprise_cooldown_minutes",
     "apprise_offline_grace_minutes", "hte_password_days", "web_client_ice_servers",
 ];
 const BOOLS: &[&str] = &[
-    "downloads_on_login", "require_device_approval", "auto_approve_signed_in", "new_devices_incoming_only", "server_ip_match", "hte_scope_enforce", "hte_passwords", "two_factor_required", "two_factor_required_admins",
+    "downloads_on_login", "require_device_approval", "auto_approve_signed_in", "new_devices_incoming_only", "server_ip_match", "hte_scope_enforce", "hte_share_links", "hte_passwords", "two_factor_required", "two_factor_required_admins",
     "web_client_webrtc", "email_login_verification", "oidc_enabled", "oidc_default_admin", "oidc_require_verified_email", "oidc_logout_enabled", "oidc_disable_local_login", "smtp_enabled", "apprise_enabled",
 ];
 /// Write-only inputs: read from a post, never from the database, never given back.
@@ -134,6 +134,8 @@ fn load(ctx: &Ctx, c: &Connection) -> Result<(Values, Vec<(String, String)>), Fa
     s(&mut v, "server_access_mode", server_mode(c)?);
     b(&mut v, "server_ip_match", on(c, "server_ip_match")?);
     b(&mut v, "hte_scope_enforce", on(c, "hte_scope_enforce")?);
+    b(&mut v, "hte_share_links", on(c, "hte_share_links")?);
+    s(&mut v, "hte_share_who", if txt(c, "hte_share_who", "admin")? == "reach" { "reach" } else { "admin" }.into());
     b(&mut v, "hte_passwords", on(c, "hte_pw_enabled")?);
     s(&mut v, "hte_password_days", crate::passwords_sweep::days(c)?.to_string());
     b(&mut v, "two_factor_required", on(c, "two_factor_required")?);
@@ -663,7 +665,7 @@ fn render(ctx: &Ctx, c: &Connection, p: Page) -> Result<Reply, Fault> {
         "api_url": crate::envvar::var("APP_URL").unwrap_or_default().trim_end_matches('/').to_string(),
         "oidc_callback": format!("{}/login/oidc/callback", crate::envvar::var("APP_URL").unwrap_or_default().trim_end_matches('/')),
         "link": {"ok": l.ok, "note": l.note, "tone": match l.ok { Some(true) => "text-success", Some(false) => "text-danger", None => "text-muted" }},
-        "scope": {"tone": scope_tone, "text": scope_text}, "pw": {"tone": pw_tone, "text": pw_text},
+        "scope": {"tone": scope_tone, "text": scope_text}, "share_env": super::share::env_on(), "pw": {"tone": pw_tone, "text": pw_text},
         "day_choices": DAY_CHOICES.iter().map(|(d, l)| json!({"d": d, "label": l, "suffix": if *d != 0 { format!(" ({d})") } else { String::new() }})).collect::<Vec<_>>(),
         "default_groups": opt(&default_groups), "user_groups": opt(&user_groups), "all_groups": opt(&all_groups), "devices": dev_opts, "events": events,
         "mail_enabled": mail_on, "mail_broken": mail_broken.0, "mail_error": mail_broken.1, "mail_flash": ctx.flashed.get("mail_broken").and_then(|v| v.as_str()).unwrap_or(""), "mail_test": ctx.flashed.get("mail_test").cloned().unwrap_or(Value::Null),
@@ -821,6 +823,15 @@ pub fn save(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         if vb(&v, "hte_scope_enforce") != on(c, "hte_scope_enforce")? {
             now_s("hte_scope_enforce", bool_s(vb(&v, "hte_scope_enforce")))?;
             audit(ctx, c, "settings.hte-scope", &format!("Per-person reach {} by the ID server", if vb(&v, "hte_scope_enforce") { "enforced" } else { "no longer enforced" }), Some("settings"), None)?;
+        }
+        if vb(&v, "hte_share_links") != on(c, "hte_share_links")? {
+            now_s("hte_share_links", bool_s(vb(&v, "hte_share_links")))?;
+            audit(ctx, c, "settings.hte-share-links", &format!("Share links {}", if vb(&v, "hte_share_links") { "turned on" } else { "turned off; every link stops working" }), Some("settings"), None)?;
+        }
+        let who = if vs(&v, "hte_share_who") == "reach" { "reach" } else { "admin" };
+        if who != txt(c, "hte_share_who", "admin")? {
+            now_s("hte_share_who", who)?;
+            audit(ctx, c, "settings.hte-share-who", &format!("Share links may be made by {}", if who == "reach" { "anyone who may edit the device" } else { "administrators only" }), Some("settings"), None)?;
         }
         now_s("two_factor_required", bool_s(vb(&v, "two_factor_required")))?;
         now_s("two_factor_required_admins", bool_s(vb(&v, "two_factor_required_admins")))?;

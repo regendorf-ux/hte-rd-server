@@ -228,6 +228,32 @@ fn ws_base(headers: &HeaderMap) -> String {
     format!("{}://{host}{}", if secure { "wss" } else { "ws" }, port.map(|p| format!(":{p}")).unwrap_or_default())
 }
 
+/// The ID server's and relay's WebSocket addresses for a page: the settings first, else derived from the request.
+pub(super) fn ws_urls(headers: &HeaderMap) -> (String, String) {
+    let (mut ws_id, mut ws_relay) = (env("HTE_REMOTE_WS_ID_URL"), env("HTE_REMOTE_WS_RELAY_URL"));
+    if ws_id.is_empty() || ws_relay.is_empty() {
+        let base = ws_base(headers);
+        if ws_id.is_empty() && !base.is_empty() {
+            ws_id = format!("{base}/ws/id");
+        }
+        if ws_relay.is_empty() && !base.is_empty() {
+            ws_relay = format!("{base}/ws/relay");
+        }
+    }
+    (ws_id, ws_relay)
+}
+
+/// `ServerLink::sign`: the signed part plus its HMAC under the link secret; empty while the link is off.
+pub(super) fn sign_ticket(signed: &str) -> String {
+    let secret = crate::link::server_secret();
+    if secret.is_empty() {
+        return String::new();
+    }
+    let mut m = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()).expect("hmac takes any key length");
+    m.update(signed.as_bytes());
+    format!("{signed}.{}", hex::encode(m.finalize().into_bytes()))
+}
+
 /// `ServerLink::webTicket`: the page's ticket for the ID server (`cdw1.<expiry>.web-<id>.<hmac>`), empty while the link is off.
 fn web_ticket(user_id: i64, now: i64) -> String {
     let secret = crate::link::server_secret();
@@ -240,7 +266,7 @@ fn web_ticket(user_id: i64, now: i64) -> String {
     format!("{signed}.{}", hex::encode(m.finalize().into_bytes()))
 }
 
-fn server_key(c: &Connection) -> Result<String, Fault> {
+pub(super) fn server_key(c: &Connection) -> Result<String, Fault> {
     let saved = String::from_utf8_lossy(&db::setting(c, "public_key", "")?).trim().to_string();
     if !saved.is_empty() {
         return Ok(saved);
@@ -252,7 +278,7 @@ fn server_key(c: &Connection) -> Result<String, Fault> {
 /// ICE servers the browser should use (`""` = the browser client's built-in public STUN servers). A direct WebRTC session goes
 /// from the browser to the device without the relay; the ID server still carries the offer, and the device still asks for the
 /// password, which `credential` gives only for a computer in the person's reach.
-fn webrtc(c: &Connection) -> Result<Value, Fault> {
+pub(super) fn webrtc(c: &Connection) -> Result<Value, Fault> {
     if !super::settings::webrtc_on(c)? {
         return Ok(Value::Null);
     }
@@ -262,16 +288,7 @@ fn webrtc(c: &Connection) -> Result<Value, Fault> {
 
 /// GET /webclient[?id=...]
 pub fn show(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
-    let (mut ws_id, mut ws_relay) = (env("HTE_REMOTE_WS_ID_URL"), env("HTE_REMOTE_WS_RELAY_URL"));
-    if ws_id.is_empty() || ws_relay.is_empty() {
-        let base = ws_base(&req.headers);
-        if ws_id.is_empty() && !base.is_empty() {
-            ws_id = format!("{base}/ws/id");
-        }
-        if ws_relay.is_empty() && !base.is_empty() {
-            ws_relay = format!("{base}/ws/relay");
-        }
-    }
+    let (ws_id, ws_relay) = ws_urls(&req.headers);
     let user_id = ctx.uid();
     let name = String::from_utf8_lossy(&ctx.user.val("name").to_php_string().unwrap_or_default()).into_owned();
     let username = String::from_utf8_lossy(&ctx.user.val("username").to_php_string().unwrap_or_default()).into_owned();

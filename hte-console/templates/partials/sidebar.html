@@ -187,7 +187,7 @@
                 <button type="button" class="btn-close rd-about-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 <img src="/assets/images/hte-remote.png?v={{ version }}" alt="" width="64" height="64" class="rd-about-logo">
                 <h5 class="rd-about-title" id="rd-about-title">HTE Remote</h5>
-                <div class="rd-about-version">Version {{ version }}</div>
+                <div class="rd-about-version">You are running {{ version }}</div>
                 <div class="rd-about-released">Released {{ update.released }}</div>
                 {% if update.upgrade %}
                     <div class="rd-about-status rd-about-status-new"><i class="ri-download-cloud-2-line"></i><span>Version {{ update.upgrade }} is available</span></div>
@@ -201,7 +201,7 @@
                     <a href="https://github.com/{{ update.repo }}/releases/tag/{{ update.tag_prefix }}{{ version }}" target="_blank" rel="noopener" class="btn btn-light btn-sm rd-about-notes">Release notes for {{ version }} <i class="ri-arrow-right-up-line"></i></a>
                 {% endif %}
                 <div class="rd-about-foot">
-                    <p>Built on CortenDesk Server and CortenDesk by Marc Pope, AGPL-3.0, with HTE's changes. <a href="https://github.com/{{ update.repo }}/blob/main/NOTICE" target="_blank" rel="noopener">Notices</a></p>
+                    <p>Built on <a href="https://github.com/marcpope/cortendesk-server" target="_blank" rel="noopener">CortenDesk Server</a> and <a href="https://github.com/marcpope/cortendesk" target="_blank" rel="noopener">CortenDesk</a> by Marc Pope, AGPL-3.0, with HTE's changes. <a href="https://github.com/{{ update.repo }}/blob/main/NOTICE" target="_blank" rel="noopener">Notices</a></p>
                 </div>
             </div>
         </div>
