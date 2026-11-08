@@ -39,6 +39,8 @@ pub struct MailConfig {
     pub encryption: String,
     pub from_address: String,
     pub from_name: String,
+    /// The line at the bottom of every message (CortenDesk 1.22.0); empty keeps "Sent by <app> at <address>".
+    pub footer: String,
 }
 
 impl std::fmt::Debug for MailConfig {
@@ -73,6 +75,7 @@ impl MailConfig {
             encryption: if ["starttls", "ssl", "none"].contains(&enc.as_str()) { enc } else { "starttls".into() },
             from_address: setting(c, "smtp_from_address")?,
             from_name: setting(c, "smtp_from_name")?,
+            footer: setting(c, "smtp_footer")?,
         })
     }
 
@@ -208,6 +211,20 @@ pub fn quoted_printable(body: &str) -> String {
     out
 }
 
+/// The footer line of a rendered message: the layout marks its default ("Sent by ...") between two comments, and a footer set
+/// in Settings > Email takes its place, HTML-escaped, a line break kept (`nl2br(e($footer))`).
+pub fn with_footer(html: &str, footer: &str) -> String {
+    const OPEN: &str = "<!--rd-footer-->";
+    const CLOSE: &str = "<!--/rd-footer-->";
+    let footer = footer.trim();
+    let (Some(a), Some(b)) = (html.find(OPEN), html.find(CLOSE)) else { return html.to_string() };
+    if footer.is_empty() || b < a {
+        return html.to_string();
+    }
+    let text = crate::laravel::e(footer).replace("\r\n", "<br>\n").replace('\n', "<br>\n");
+    format!("{}{text}{}", &html[..a], &html[b + CLOSE.len()..])
+}
+
 /// The whole message as it goes after DATA (before dot-stuffing).
 pub fn build(cfg: &MailConfig, app_name: &str, local_domain: &str, msg: &Message, now: i64) -> Result<String, String> {
     if !no_breaks(&msg.to) || !no_breaks(&msg.subject) || !no_breaks(&cfg.from_address) || !no_breaks(&cfg.from_name) {
@@ -223,7 +240,7 @@ pub fn build(cfg: &MailConfig, app_name: &str, local_domain: &str, msg: &Message
         to = msg.to,
         subject = header_text(&msg.subject),
         domain = if local_domain.is_empty() { "localhost" } else { local_domain },
-        body = quoted_printable(&msg.html),
+        body = quoted_printable(&with_footer(&msg.html, &cfg.footer)),
     ))
 }
 
@@ -425,6 +442,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_footer_replaces_the_default_line() {
+        let html = "<td><!--rd-footer-->Sent by HTE Remote at https://x.example.<!--/rd-footer--></td>";
+        assert_eq!(with_footer(html, ""), html);
+        assert_eq!(with_footer(html, "  \n "), html);
+        assert_eq!(with_footer(html, "Support: <b>help</b>\nCall 555"), "<td>Support: &lt;b&gt;help&lt;/b&gt;<br>\nCall 555</td>");
+        assert_eq!(with_footer("<td>no marks</td>", "x"), "<td>no marks</td>");
+    }
+
+    #[test]
     fn quoted_printable_and_headers() {
         assert_eq!(quoted_printable("a=b é\nend "), "a=3Db =C3=A9\r\nend=20");
         let long = "x".repeat(100);
@@ -488,7 +514,7 @@ mod tests {
             }
             said
         });
-        let cfg = MailConfig { enabled: true, host: "127.0.0.1".into(), port, username: "u".into(), password: "tok-5eed0000mailpw01".into(), encryption: "none".into(), from_address: "from@example.invalid".into(), from_name: String::new() };
+        let cfg = MailConfig { enabled: true, host: "127.0.0.1".into(), port, username: "u".into(), password: "tok-5eed0000mailpw01".into(), encryption: "none".into(), from_address: "from@example.invalid".into(), from_name: String::new(), footer: String::new() };
         let m = Message { to: "to@example.invalid".into(), subject: "Hello".into(), html: ".dot line\n<p>hi</p>".into() };
         deliver(&cfg, "HTE Remote", "console.example.invalid", &m, 1_800_000_000).unwrap();
         let said = h.join().unwrap();

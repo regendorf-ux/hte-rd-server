@@ -47,7 +47,7 @@ const DAY_CHOICES: &[(i64, &str)] = &[(7, "Every 7 days"), (30, "Every 30 days")
 
 const STRINGS: &[&str] = &[
     "id_server", "relay_server", "public_key", "rdgen_url", "client_url_scheme", "server_access_mode", "oidc_discovery_url", "oidc_public_base_url", "oidc_client_id", "oidc_scopes",
-    "oidc_button_label", "oidc_new_user_policy", "oidc_allowed_domains", "smtp_host", "smtp_encryption", "smtp_username", "smtp_from_address", "smtp_from_name", "apprise_mode",
+    "oidc_button_label", "oidc_new_user_policy", "oidc_allowed_domains", "smtp_host", "smtp_encryption", "smtp_username", "smtp_from_address", "smtp_from_name", "smtp_footer", "apprise_mode",
     "online_window", "log_retention_days", "default_device_group_id", "oidc_default_group_id", "smtp_port", "email_trusted_device_days", "apprise_cooldown_minutes",
     "apprise_offline_grace_minutes", "hte_password_days", "web_client_ice_servers",
 ];
@@ -161,6 +161,7 @@ fn load(ctx: &Ctx, c: &Connection) -> Result<(Values, Vec<(String, String)>), Fa
     s(&mut v, "smtp_username", txt(c, "smtp_username", "")?);
     s(&mut v, "smtp_from_address", txt(c, "smtp_from_address", "")?);
     s(&mut v, "smtp_from_name", txt(c, "smtp_from_name", "")?);
+    s(&mut v, "smtp_footer", txt(c, "smtp_footer", "")?);
     b(&mut v, "email_login_verification", on(c, "email_login_verification")?);
     let days = int_of(&txt(c, "email_trusted_device_days", "30")?);
     s(&mut v, "email_trusted_device_days", (if days == 0 { 30 } else { days }).to_string());
@@ -320,7 +321,7 @@ fn validate_values(v: &Values, relays: &[(String, String)]) -> Vec<(String, Stri
         ("serverAccessMode", "server_access_mode"), ("oidcDiscoveryUrl", "oidc_discovery_url"), ("oidcPublicBaseUrl", "oidc_public_base_url"), ("oidcClientId", "oidc_client_id"),
         ("oidcClientSecret", "oidc_client_secret"), ("oidcScopes", "oidc_scopes"), ("oidcButtonLabel", "oidc_button_label"), ("oidcNewUserPolicy", "oidc_new_user_policy"),
         ("oidcAllowedDomains", "oidc_allowed_domains"), ("smtpHost", "smtp_host"), ("smtpEncryption", "smtp_encryption"), ("smtpUsername", "smtp_username"), ("smtpPassword", "smtp_password"),
-        ("smtpFromAddress", "smtp_from_address"), ("smtpFromName", "smtp_from_name"), ("appriseEndpoint", "apprise_endpoint"), ("appriseMode", "apprise_mode"),
+        ("smtpFromAddress", "smtp_from_address"), ("smtpFromName", "smtp_from_name"), ("smtpFooter", "smtp_footer"), ("appriseEndpoint", "apprise_endpoint"), ("appriseMode", "apprise_mode"),
         ("appriseConfigKey", "apprise_config_key"), ("appriseUrls", "apprise_urls"),
     ] {
         d.set(Key::from_bytes(camel.as_bytes()), st(snake));
@@ -369,6 +370,7 @@ fn validate_values(v: &Values, relays: &[(String, String)]) -> Vec<(String, Stri
         ("smtpPassword", &[Rule::Nullable, Rule::String, Rule::Max(512)]),
         ("smtpFromAddress", &[Rule::Nullable, Rule::Email, Rule::Max(255)]),
         ("smtpFromName", &[Rule::Nullable, Rule::String, Rule::Max(64)]),
+        ("smtpFooter", &[Rule::Nullable, Rule::String, Rule::Max(500)]),
         ("emailTrustedDeviceDays", &[Rule::Required, Rule::Integer, Rule::Min(1), Rule::Max(365)]),
         ("appriseEndpoint", &[Rule::Nullable, Rule::UrlWeb, Rule::Max(2048)]),
         ("appriseMode", &[Rule::Required, Rule::In(&["config", "urls"])]),
@@ -849,6 +851,7 @@ pub fn save(ctx: &Ctx, c: &Connection, req: &Req) -> Result<Reply, Fault> {
         now_s("smtp_username", vs(&v, "smtp_username").trim())?;
         now_s("smtp_from_address", vs(&v, "smtp_from_address").trim())?;
         now_s("smtp_from_name", vs(&v, "smtp_from_name").trim())?;
+        now_s("smtp_footer", vs(&v, "smtp_footer").trim())?;
         now_s("email_trusted_device_days", &int_of(&vs(&v, "email_trusted_device_days")).to_string())?;
 
         now_s("apprise_enabled", bool_s(vb(&v, "apprise_enabled")))?;

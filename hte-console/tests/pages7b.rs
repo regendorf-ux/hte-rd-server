@@ -780,7 +780,7 @@ async fn the_settings_page() {
         ("id_server", " hbbs.example.test:21116 "), ("rdgen_url", "https://rdgen.example.test/"), ("client_url_scheme", "Level1:"), ("downloads_on_login", "1"), ("server_ip_match", "1"), ("hte_scope_enforce", "1"), ("web_client_webrtc", "1"), ("web_client_ice_servers", " STUN:stun.example.test:3478 , turn://u:p@turn.example.test "),
         ("relay_address[]", "r1.example.test:21117"), ("relay_geo[]", "eu"), ("relay_address[]", ""), ("relay_geo[]", ""),
         ("oidc_enabled", "1"), ("oidc_discovery_url", "https://idp.example.test/"), ("oidc_client_id", "cid"), ("oidc_client_secret", "topsecret-value"),
-        ("smtp_host", "smtp.example.test"), ("smtp_from_address", "c@example.test"), ("smtp_enabled", "1"), ("smtp_password", "smtp-pass-123"), ("email_login_verification", "1"),
+        ("smtp_host", "smtp.example.test"), ("smtp_from_address", "c@example.test"), ("smtp_enabled", "1"), ("smtp_password", "smtp-pass-123"), ("email_login_verification", "1"), ("smtp_footer", "  Questions? Ask the help desk.  "),
         ("apprise_enabled", "1"), ("apprise_endpoint", "https://apprise.example.test"), ("apprise_mode", "urls"), ("apprise_urls", "slack://a/b\r\n\r\n0\r\ndiscord://c"),
         ("apprise_event_device_offline", "1"), ("apprise_scope_device_offline", "selected"), ("apprise_scope_groups_device_offline[]", "1"), ("apprise_scope_groups_device_offline[]", "1"), ("apprise_scope_devices_device_offline[]", "2"),
     ]);
@@ -795,6 +795,8 @@ async fn the_settings_page() {
     assert_eq!(h.text("select value from settings where key = 'server_ip_match'"), "1");
     assert_eq!(h.text("select value from settings where key = 'hte_scope_enforce'"), "1");
     assert_eq!(h.text("select value from settings where key = 'email_login_verification'"), "1");
+    assert_eq!(h.text("select value from settings where key = 'smtp_footer'"), "Questions? Ask the help desk.");
+    assert!(h.get("/settings?tab=email", &cookie).await.body.contains("Questions? Ask the help desk."), "the footer is shown again");
     assert_eq!(h.text("select value from settings where key = 'webclient_webrtc'"), "1");
     assert_eq!(h.text("select value from settings where key = 'webclient_ice_servers'"), "stun:stun.example.test:3478,turn://u:p@turn.example.test");
     assert_eq!(h.count("console_audits where action = 'settings.webclient-webrtc'"), 1);

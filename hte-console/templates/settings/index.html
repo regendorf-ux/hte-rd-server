@@ -452,6 +452,12 @@
                             {% if e.smtp_from_name %}<div class="invalid-feedback">{{ e.smtp_from_name }}</div>{% endif %}
                         </div>
                     </div>
+                    <div class="mb-3">
+                        <label class="form-label">Email footer</label>
+                        <textarea class="form-control{{ ' is-invalid' if e.smtp_footer else '' }}" rows="2" maxlength="500" name="smtp_footer" placeholder="Sent by {{ app_name }} at the console's address">{{ v.smtp_footer }}</textarea>
+                        {% if e.smtp_footer %}<div class="invalid-feedback">{{ e.smtp_footer }}</div>{% endif %}
+                        <div class="form-text">The line at the bottom of every email. Leave it blank to keep the default.</div>
+                    </div>
                     <button type="submit" class="btn btn-primary"{{ '' if can_manage else ' disabled' }}><i class="ri-save-line me-1"></i>Save Settings</button>
                     <hr>
                     <label class="form-label">Send a test email</label>
