@@ -26,7 +26,7 @@ rand = "0.8"
 # Phase 1 (device endpoints). Versions chosen to reuse what the workspace lockfile already holds:
 # rusqlite 0.32 links the same libsqlite3-sys 0.30 as hbbs's sqlx (two copies of `links = "sqlite3"` cannot coexist);
 # sodiumoxide is hbbs's libsodium binding (crypto_box_seal and ed25519 -> curve25519 exactly as the previous console's sodium_*).
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 sodiumoxide = "0.2.7"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }

@@ -314,6 +314,40 @@ async fn sorting_and_columns_are_saved_on_the_person() {
     assert_eq!(h.text("select coalesce(devices_columns, 'NULL') from users where id = 1"), "NULL");
 }
 
+/// CortenDesk 1.22.0: the Strategy column (administrators only, sortable) and the IP column sorting by address.
+#[tokio::test(flavor = "multi_thread")]
+async fn strategy_column_and_ip_sort() {
+    let h = harness().await;
+    let admin = h.login(&sid("stratcol"), 1, json!({}));
+    h.sql("insert into strategies (id, name, enabled, created_at, updated_at) values (7, 'Office laptops', 1, '2025-01-01 00:00:00', '2025-01-01 00:00:00')");
+    h.sql("update devices set strategy_id_resolved = 7 where id = 1");
+    for (id, host, ip) in [(11, "IPA-PC", "10.0.0.10"), (12, "IPB-PC", "10.0.0.9"), (13, "IPC-PC", "2001:db8::1"), (14, "IPD-PC", "not an address")] {
+        h.sql(&format!("insert into devices (id, rustdesk_id, uuid, hostname, status, last_online_ip, created_at, updated_at) values ({id}, '20{id}', 'u{id}', '{host}', 'active', '{ip}', '2025-01-01 00:00:00', '2025-01-01 00:00:00')"));
+    }
+    h.post_form("/devices/columns", &admin, &[tok(), ("columns[]", "device"), ("columns[]", "strategy"), ("columns[]", "ip"), ("back", ""), ("done", "1")]).await;
+    let body = h.get("/devices", &admin).await.body;
+    assert!(squash(&body).contains("Strategy<i"), "the admin's column list offers Strategy");
+    assert!(body.contains("Office laptops"));
+    // IP sorts by address: 10.0.0.9 before 10.0.0.10, IPv4 before IPv6, what is no address last
+    let r = h.post_form("/devices/sort", &admin, &[tok(), ("field", "ip"), ("back", "")]).await;
+    assert_eq!(r.status, 302, "{}", r.body);
+    assert_eq!(h.text("select devices_sort from users where id = 1"), "ip");
+    let body = h.get("/devices", &admin).await.body;
+    let at = |n: &str| body.find(n).unwrap_or_else(|| panic!("{n} is listed"));
+    assert!(at("FRONT-PC") < at("BACK-PC") && at("BACK-PC") < at("IPB-PC") && at("IPB-PC") < at("IPA-PC") && at("IPA-PC") < at("IPC-PC") && at("IPC-PC") < at("IPD-PC"));
+    // by the strategy's name; nobody else may sort or show it
+    let r = h.post_form("/devices/sort", &admin, &[tok(), ("field", "strategy"), ("back", "")]).await;
+    assert_eq!(r.status, 302);
+    assert_eq!(h.text("select devices_sort from users where id = 1"), "strategy");
+    let dana = h.login(&sid("stratdana"), 2, json!({}));
+    h.post_form("/devices/columns", &dana, &[tok(), ("columns[]", "device"), ("columns[]", "strategy"), ("back", ""), ("done", "1")]).await;
+    let r = h.post_form("/devices/sort", &dana, &[tok(), ("field", "strategy"), ("back", "")]).await;
+    assert_eq!(r.status, 302);
+    assert_ne!(h.text("select coalesce(devices_sort, '') from users where id = 2"), "strategy");
+    let body = h.get("/devices", &dana).await.body;
+    assert!(!body.contains("Office laptops") && !squash(&body).contains("Strategy<i"), "a person who is not an administrator sees no strategy column");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn device_writes() {
     let h = harness().await;

@@ -156,12 +156,12 @@
                     {% if not st.trashed %}<input type="checkbox" class="form-check-input" data-rd-selectall title="Select every row on this page">{% endif %}
                 </th>
                 {% set f = "id" %}{% set label = "ID" %}{% include "devices/th.html" %}
-                {% for key, label in [["device", "Device"], ["alias", "Alias"], ["group", "Group"], ["owner", "Owner"], ["version", "Version"]] %}
+                {% for key, label in [["device", "Device"], ["alias", "Alias"], ["group", "Group"], ["owner", "Owner"], ["strategy", "Strategy"], ["version", "Version"]] %}
                     {% if cols[key] %}{% set f = key %}{% set label = label %}{% include "devices/th.html" %}{% endif %}
                 {% endfor %}
                 {% if cols.os %}{% set f = "os" %}{% set label = "OS" %}{% include "devices/th.html" %}{% endif %}
                 {% if cols.username %}<th>User</th>{% endif %}
-                {% if cols.ip %}<th>IP</th>{% endif %}
+                {% if cols.ip %}{% set f = "ip" %}{% set label = "IP" %}{% include "devices/th.html" %}{% endif %}
                 {% if cols.lan_ip %}<th title="Last seen during a connection">LAN IP</th>{% endif %}
                 {% if cols.cpu %}<th>CPU</th>{% endif %}
                 {% if cols.memory %}<th>Memory</th>{% endif %}
@@ -219,6 +219,9 @@
                                 <span class="text-muted">—</span>
                             {% endif %}
                         </td>
+                    {% endif %}
+                    {% if cols.strategy %}
+                        <td>{% if d.strategy %}<span class="badge bg-primary-subtle text-primary">{{ d.strategy }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
                     {% endif %}
                     {% if cols.version %}
                         <td><span class="badge bg-secondary-subtle text-secondary">{{ d.version or '?' }}</span></td>

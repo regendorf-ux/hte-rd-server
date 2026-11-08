@@ -22,6 +22,9 @@ const GENERIC_HOSTNAMES: &[&str] = &[
     "default", "none", "(none)",
 ];
 
+/// How long both rows must report in side by side to count as two machines (CortenDesk 1.23.0, issue #159).
+const CONCURRENT_SECONDS: i64 = 3600;
+
 fn strength(reason: &str) -> u8 {
     if reason == "uuid" { 2 } else { 1 }
 }
@@ -228,10 +231,29 @@ impl Duplicates {
         Ok(d)
     }
 
+    /// `DuplicateDevices::concurrent`: both rows reported in well after the later one appeared. A reinstalled machine stops
+    /// reporting under its old ID, so two rows that both kept reporting are two machines (cloned from one image, they share a
+    /// hardware ID and so a UUID). A row that never reported, or has no creation time, decides nothing.
+    fn concurrent(&self, a: i64, b: i64) -> bool {
+        let stamp = |id: i64, col: &str| self.devices.get(&id).and_then(|d| match d.val(col) {
+            Val::Null => None,
+            v => laravel::parse_ts(&v),
+        });
+        let (Some(seen_a), Some(seen_b), Some(born_a), Some(born_b)) =
+            (stamp(a, "last_online_at"), stamp(b, "last_online_at"), stamp(a, "created_at"), stamp(b, "created_at"))
+        else {
+            return false;
+        };
+        seen_a.min(seen_b) > born_a.max(born_b) + CONCURRENT_SECONDS
+    }
+
     fn pair_up(&mut self, group: &[i64], why: &'static str) {
         for i in 0..group.len() {
             for j in i + 1..group.len() {
                 let (a, b) = (group[i], group[j]);
+                if self.concurrent(a, b) {
+                    continue;
+                }
                 let current = self.pairs.get(&a).and_then(|l| l.iter().find(|(o, _)| *o == b)).map(|(_, r)| *r);
                 if current.map_or(true, |cur| strength(why) > strength(cur)) {
                     for (x, y) in [(a, b), (b, a)] {

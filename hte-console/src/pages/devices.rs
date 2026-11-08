@@ -18,11 +18,12 @@ use crate::validate::{self, Rule};
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-pub const COLUMNS: [(&str, &str); 14] = [
+pub const COLUMNS: [(&str, &str); 15] = [
     ("device", "Device"),
     ("alias", "Alias"),
     ("group", "Group"),
     ("owner", "Owner"),
+    ("strategy", "Strategy"),
     ("version", "Version"),
     ("os", "OS"),
     ("username", "User"),
@@ -34,15 +35,19 @@ pub const COLUMNS: [(&str, &str); 14] = [
     ("first_seen", "First Seen"),
     ("last_seen", "Last Seen"),
 ];
+/// Columns, and sorts, only administrators get: who owns what, and which policy applies (CortenDesk 1.22.0).
+const ADMIN_COLUMNS: [&str; 2] = ["owner", "strategy"];
 const DEFAULT_COLUMNS: [&str; 6] = ["device", "alias", "group", "owner", "version", "last_seen"];
-const SORTABLE: [(&str, &str); 10] = [
+const SORTABLE: [(&str, &str); 12] = [
     ("id", "devices.rustdesk_id"),
     ("device", "devices.hostname"),
     ("alias", "devices.alias"),
     ("group", "__group__"),
     ("owner", "__owner__"),
+    ("strategy", "__strategy__"),
     ("version", "devices.version"),
     ("os", "devices.os"),
+    ("ip", "__ip__"),
     ("first_seen", "devices.created_at"),
     ("last_seen", "devices.last_online_at"),
     ("status", "__presence__"),
@@ -125,7 +130,7 @@ pub struct SavedView {
 }
 
 fn can_sort(ctx: &Ctx, field: &str) -> bool {
-    SORTABLE.iter().any(|(k, _)| *k == field) && (field != "owner" || ctx.is_admin())
+    SORTABLE.iter().any(|(k, _)| *k == field) && (!ADMIN_COLUMNS.contains(&field) || ctx.is_admin())
 }
 
 /// `mount()`: the saved column choice and sort, or the defaults.
@@ -217,8 +222,18 @@ fn filtered(ctx: &Ctx, c: &Connection, st: &St, view: &SavedView, dup: Option<&c
     if field == "status" {
         order.push(format!("CASE WHEN devices.last_online_at > ? THEN 1 ELSE 0 END {dir}"));
         order_params.push(P(Val::str(&cutoff)));
-    } else if field == "group" || field == "owner" {
-        let (table, column, fk) = if field == "group" { ("device_groups", "name", "devices.device_group_id") } else { ("users", "username", "devices.user_id") };
+    } else if field == "ip" {
+        // by address, not text: 10.0.0.9 before 10.0.0.10, IPv4 before IPv6 (an address that does not parse sorts last)
+        register_ip_key(c)?;
+        order.push("cd_ip_key(devices.last_online_ip) is null".into());
+        order.push(format!("length(cd_ip_key(devices.last_online_ip)) {dir}"));
+        order.push(format!("cd_ip_key(devices.last_online_ip) {dir}"));
+    } else if field == "group" || field == "owner" || field == "strategy" {
+        let (table, column, fk) = match field {
+            "group" => ("device_groups", "name", "devices.device_group_id"),
+            "owner" => ("users", "username", "devices.user_id"),
+            _ => ("strategies", "name", "devices.strategy_id_resolved"),
+        };
         order.push(format!("{fk} is null"));
         order.push(format!(r#"(select "{column}" from "{table}" where "{table}"."id" = {fk}) {dir}"#));
     } else {
@@ -232,6 +247,19 @@ fn filtered(ctx: &Ctx, c: &Connection, st: &St, view: &SavedView, dup: Option<&c
     }
     order.push("devices.rustdesk_id asc".into());
     Ok(Query { where_sql: w.sql(), params: w.params, order_sql: order.join(", "), order_params })
+}
+
+/// `cd_ip_key(ip)`: the address's bytes in hex, NULL when it does not parse (the sort key of the IP column).
+fn register_ip_key(c: &Connection) -> Result<(), Fault> {
+    use rusqlite::functions::FunctionFlags;
+    c.create_scalar_function("cd_ip_key", 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        Ok(text.and_then(|t| t.trim().parse::<std::net::IpAddr>().ok()).map(|ip| match ip {
+            std::net::IpAddr::V4(v) => hex::encode(v.octets()),
+            std::net::IpAddr::V6(v) => hex::encode(v.octets()),
+        }))
+    })
+    .map_err(|e| Fault::Other(format!("cd_ip_key: {e}")))
 }
 
 fn run(c: &Connection, q: &Query, limit: Option<(i64, i64)>) -> Result<Vec<Row>, Fault> {
@@ -502,6 +530,7 @@ fn device_json(
         "alias": s(d, "alias"),
         "group": group,
         "owner": owner,
+        "strategy": "",
         "version": s(d, "version"),
         "os": os,
         "os_desc_34": limit(&os_desc, 34),
@@ -591,22 +620,32 @@ pub fn render(ctx: &Ctx, c: &Connection, st: &St, status: u16, modal: Modal, req
         let ids: Vec<i64> = rows.iter().filter(|d| !d.is_null("device_group_id")).map(|d| d.val("device_group_id").to_int()).collect();
         if ids.is_empty() { vec![] } else { find_in(c, "device_groups", &ids)? }
     };
-    let items: Vec<Value> = rows.iter().map(|d| device_json(c, d, now, window, &group_rows, &user_rows, dup.as_ref())).collect::<Result<_, _>>()?;
+    let mut items: Vec<Value> = rows.iter().map(|d| device_json(c, d, now, window, &group_rows, &user_rows, dup.as_ref())).collect::<Result<_, _>>()?;
+    if admin {
+        // the strategy in force (`resolvedStrategy`), a column for administrators only
+        let ids: Vec<i64> = rows.iter().filter(|d| !d.is_null("strategy_id_resolved")).map(|d| d.val("strategy_id_resolved").to_int()).collect();
+        let strategies = if ids.is_empty() { vec![] } else { find_in(c, "strategies", &ids)? };
+        for (item, d) in items.iter_mut().zip(&rows) {
+            if let Some(st) = by_id(&strategies, &d.val("strategy_id_resolved")).filter(|st| st.is_null("deleted_at")) {
+                item["strategy"] = json!(s(st, "name"));
+            }
+        }
+    }
     let page = paginate::page(st.page, PER_PAGE, n, rows.len() as i64);
 
     let mut cols = Map::new();
     for (k, _) in COLUMNS {
-        cols.insert(k.to_string(), json!(view.columns.iter().any(|c| c == k) && (k != "owner" || admin)));
+        cols.insert(k.to_string(), json!(view.columns.iter().any(|c| c == k) && (!ADMIN_COLUMNS.contains(&k) || admin)));
     }
     let colspan = 4 + cols.values().filter(|v| v.as_bool() == Some(true)).count();
     let col_list: Vec<Value> = COLUMNS
         .iter()
-        .filter(|(k, _)| *k != "owner" || admin)
+        .filter(|(k, _)| !ADMIN_COLUMNS.contains(k) || admin)
         .map(|(k, l)| json!({"key": k, "label": l, "checked": view.columns.iter().any(|c| c == k)}))
         .collect();
     let sort_options: Vec<Value> = SORTABLE
         .iter()
-        .filter(|(k, _)| *k != "owner" || admin)
+        .filter(|(k, _)| !ADMIN_COLUMNS.contains(k) || admin)
         .map(|(k, _)| {
             let label = if *k == "id" { "ID".to_string() } else { COLUMNS.iter().find(|(c, _)| c == k).map(|(_, l)| l.to_string()).unwrap_or_else(|| "Status".into()) };
             json!({"key": k, "label": label, "selected": *k == view.sort_field})
